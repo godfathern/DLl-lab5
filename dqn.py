@@ -156,7 +156,7 @@ class DQNAgent:
         for ep in range(episodes):
             obs, _ = self.env.reset()
 
-            state = self.preprocessor.reset(obs)
+            state = obs
             done = False
             total_reward = 0
             step_count = 0
@@ -166,7 +166,7 @@ class DQNAgent:
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
                 
-                next_state = self.preprocessor.step(next_obs)
+                next_state = next_obs
                 self.memory.append((state, action, reward, next_state, done))
 
                 for _ in range(self.train_per_step):
@@ -223,7 +223,7 @@ class DQNAgent:
 
     def evaluate(self):
         obs, _ = self.test_env.reset()
-        state = self.preprocessor.reset(obs)
+        state = obs
         done = False
         total_reward = 0
 
@@ -234,7 +234,7 @@ class DQNAgent:
             next_obs, reward, terminated, truncated, _ = self.test_env.step(action)
             done = terminated or truncated
             total_reward += reward
-            state = self.preprocessor.step(next_obs)
+            state = next_obs
 
         return total_reward
 
