@@ -252,33 +252,45 @@ class DQNAgent:
        
         ########## YOUR CODE HERE (<5 lines) ##########
         # Sample a mini-batch of (s,a,r,s',done) from the replay buffer
-
-      
-            
+        # group all states together, all actions togther and so on
+        batch = random.sample(list(self.memory), self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        
         ########## END OF YOUR CODE ##########
 
         # Convert the states, actions, rewards, next_states, and dones into torch tensors
         # NOTE: Enable this part after you finish the mini-batch sampling
-        #states = torch.from_numpy(np.array(states).astype(np.float32)).to(self.device)
-        #next_states = torch.from_numpy(np.array(next_states).astype(np.float32)).to(self.device)
-        #actions = torch.tensor(actions, dtype=torch.int64).to(self.device)
-        #rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
-        #dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
-        #q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        
+        #for a batch of 32, the network outputs shape [32, 2] - one value for pushing left and one for pushing right
+        states = torch.from_numpy(np.array(states).astype(np.float32)).to(self.device)
+        next_states = torch.from_numpy(np.array(next_states).astype(np.float32)).to(self.device)
+        actions = torch.tensor(actions, dtype=torch.int64).to(self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
+        q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
         ########## YOUR CODE HERE (~10 lines) ##########
         # Implement the loss function of DQN and the gradient updates 
-      
-        
-      
-        ########## END OF YOUR CODE ##########  
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states).max(dim=1).values
+            targets = rewards + self.gamma * next_q_values * (1- dones) #Bellman is the G : DL-7 / slide 55
+
+        # DQN loss (handout eq. 1): squared Bellman error between prediction and frozen target
+        loss = nn.functional.mse_loss(q_values, targets)
+
+        # Gradient update on q_net only (target_net is never stepped)
+        self.optimizer.zero_grad()   # clear gradients from the previous update
+        loss.backward()              # backprop: d(loss)/d(weights)
+        nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=10.0)  # guard against exploding updates
+        self.optimizer.step()        # Adam moves the weights
+        ########## END OF YOUR CODE ##########
 
         if self.train_count % self.target_update_frequency == 0:
             self.target_net.load_state_dict(self.q_net.state_dict())
 
         # NOTE: Enable this part if "loss" is defined
-        #if self.train_count % 1000 == 0:
-        #    print(f"[Train #{self.train_count}] Loss: {loss.item():.4f} Q mean: {q_values.mean().item():.3f} std: {q_values.std().item():.3f}")
+        if self.train_count % 1000 == 0:
+            print(f"[Train #{self.train_count}] Loss: {loss.item():.4f} Q mean: {q_values.mean().item():.3f} std: {q_values.std().item():.3f}")
 
 
 if __name__ == "__main__":
