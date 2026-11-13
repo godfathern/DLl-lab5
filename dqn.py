@@ -44,8 +44,13 @@ class DQN(nn.Module):
         #    nn.Linear(64, num_actions)
         #)       
         ########## YOUR CODE HERE (5~10 lines) ##########
-
-        
+        self.network = nn.Sequential(
+           nn.Linear(4, 64),
+           nn.ReLU(),
+           nn.Linear(64, 64),
+           nn.ReLU(),
+           nn.Linear(64, num_actions)
+        )     
         ########## END OF YOUR CODE ##########
 
     def forward(self, x):
