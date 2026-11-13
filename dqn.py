@@ -142,6 +142,7 @@ class DQNAgent:
         self.target_update_frequency = args.target_update_frequency
         self.train_per_step = args.train_per_step
         self.save_dir = args.save_dir
+        self.memory = deque(maxlen=args.memory_size)
         os.makedirs(self.save_dir, exist_ok=True)
 
     def select_action(self, state):
