@@ -1,0 +1,9 @@
+torch==2.15.0
+gymnasium==1.1.1
+pygame==2.6.1
+ale-py==0.12.1
+opencv-python==5.0.0.93
+numpy==2.4.6
+wandb==0.31.0
+imageio==2.38.1
+imageio-ffmpeg==0.8.1

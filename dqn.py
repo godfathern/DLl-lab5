@@ -143,6 +143,7 @@ class DQNAgent:
         self.train_per_step = args.train_per_step
         self.save_dir = args.save_dir
         self.memory = deque(maxlen=args.memory_size)
+        self.eval_episodes = args.eval_episodes
         os.makedirs(self.save_dir, exist_ok=True)
 
     def select_action(self, state):
@@ -168,7 +169,9 @@ class DQNAgent:
                 done = terminated or truncated
                 
                 next_state = next_obs
-                self.memory.append((state, action, reward, next_state, done))
+                # Store `terminated`, not `done`: hitting the 500-step time limit (truncated)
+                # is not a real terminal state, so its target must still bootstrap from s'
+                self.memory.append((state, action, reward, next_state, terminated))
 
                 for _ in range(self.train_per_step):
                     self.train()
@@ -223,21 +226,25 @@ class DQNAgent:
                 })
 
     def evaluate(self):
-        obs, _ = self.test_env.reset()
-        state = obs
-        done = False
-        total_reward = 0
+        # Average over several greedy episodes so "best model" isn't picked from one lucky run
+        episode_rewards = []
+        for _ in range(self.eval_episodes):
+            obs, _ = self.test_env.reset()
+            state = obs
+            done = False
+            total_reward = 0
 
-        while not done:
-            state_tensor = torch.from_numpy(np.array(state)).float().unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                action = self.q_net(state_tensor).argmax().item()
-            next_obs, reward, terminated, truncated, _ = self.test_env.step(action)
-            done = terminated or truncated
-            total_reward += reward
-            state = next_obs
+            while not done:
+                state_tensor = torch.from_numpy(np.array(state)).float().unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    action = self.q_net(state_tensor).argmax().item()
+                next_obs, reward, terminated, truncated, _ = self.test_env.step(action)
+                done = terminated or truncated
+                total_reward += reward
+                state = next_obs
+            episode_rewards.append(total_reward)
 
-        return total_reward
+        return float(np.mean(episode_rewards))
 
 
     def train(self):
@@ -253,7 +260,7 @@ class DQNAgent:
         ########## YOUR CODE HERE (<5 lines) ##########
         # Sample a mini-batch of (s,a,r,s',done) from the replay buffer
         # group all states together, all actions togther and so on
-        batch = random.sample(list(self.memory), self.batch_size)
+        batch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         
         ########## END OF YOUR CODE ##########
@@ -308,8 +315,10 @@ if __name__ == "__main__":
     parser.add_argument("--replay-start-size", type=int, default=50000)
     parser.add_argument("--max-episode-steps", type=int, default=10000)
     parser.add_argument("--train-per-step", type=int, default=1)
+    parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--eval-episodes", type=int, default=5, help="Greedy episodes averaged per evaluation")
     args = parser.parse_args()
 
     wandb.init(project="DLP-Lab5-DQN-CartPole", name=args.wandb_run_name, save_code=True)
     agent = DQNAgent(args=args)
-    agent.run()
+    agent.run(episodes=args.episodes)
