@@ -105,28 +105,57 @@ class PrioritizedReplayBuffer:
         Prioritizing the samples in the replay memory by the Bellman error
         See the paper (Schaul et al., 2016) at https://arxiv.org/abs/1511.05952
     """ 
-    def __init__(self, capacity, alpha=0.6, beta=0.4):
+    def __init__(self, capacity, alpha=0.6, beta=0.4, eps=1e-6):
         self.capacity = capacity
         self.alpha = alpha
         self.beta = beta
         self.buffer = []
+        # Stores p_i^alpha (already exponentiated) for each slot of the ring buffer
         self.priorities = np.zeros((capacity,), dtype=np.float32)
         self.pos = 0
+        self.eps = eps              # keeps every priority > 0 so no transition is never sampled
+        self.max_priority = 1.0     # largest raw priority |delta| + eps seen so far
 
-    def add(self, transition, error):
-        ########## YOUR CODE HERE (for Task 3) ########## 
-                    
-        ########## END OF YOUR CODE (for Task 3) ########## 
-        return 
-    def sample(self, batch_size):
-        ########## YOUR CODE HERE (for Task 3) ########## 
-                    
-        ########## END OF YOUR CODE (for Task 3) ########## 
+    def __len__(self):
+        return len(self.buffer)
+
+    def add(self, transition, error=None):
+        ########## YOUR CODE HERE (for Task 3) ##########
+        # New transitions have no TD error yet: give them the max priority so each is replayed soon
+        priority = self.max_priority if error is None else abs(error) + self.eps
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(transition)
+        else:
+            self.buffer[self.pos] = transition          # overwrite the oldest (FIFO ring buffer)
+        self.priorities[self.pos] = priority ** self.alpha
+        self.pos = (self.pos + 1) % self.capacity
+        ########## END OF YOUR CODE (for Task 3) ##########
         return
+    def sample(self, batch_size):
+        ########## YOUR CODE HERE (for Task 3) ##########
+        # PER
+        # P(i) = p_i^alpha / sum_k p_k^alpha, slide 62 / DL-7.
+        n = len(self.buffer)
+        scaled = self.priorities[:n].astype(np.float64)
+        cumsum = np.cumsum(scaled)
+        total = cumsum[-1]
+        targets = (np.arange(batch_size) + np.random.rand(batch_size)) * (total / batch_size)
+        indices = np.minimum(np.searchsorted(cumsum, targets, side="right"), n - 1)
+
+        # Importance-sampling weights w_i = (N * P(i))^-beta, normalized so the largest is 1
+        probs = scaled[indices] / total
+        weights = (n * probs) ** (-self.beta)
+        weights /= weights.max()
+
+        batch = [self.buffer[i] for i in indices]
+        ########## END OF YOUR CODE (for Task 3) ##########
+        return batch, indices, weights.astype(np.float32)
     def update_priorities(self, indices, errors):
-        ########## YOUR CODE HERE (for Task 3) ########## 
-                    
-        ########## END OF YOUR CODE (for Task 3) ########## 
+        ########## YOUR CODE HERE (for Task 3) ##########
+        priorities = np.abs(errors) + self.eps
+        self.priorities[indices] = priorities ** self.alpha
+        self.max_priority = max(self.max_priority, float(priorities.max()))
+        ########## END OF YOUR CODE (for Task 3) ##########
         return
         
 
@@ -169,11 +198,25 @@ class DQNAgent:
         self.target_update_frequency = args.target_update_frequency
         self.train_per_step = args.train_per_step
         self.save_dir = args.save_dir
-        self.memory = deque(maxlen=args.memory_size)
         self.eval_episodes = args.eval_episodes
         self.train_freq = args.train_freq
         self.double_dqn = args.double_dqn   # Task 3: Double DQN target (off by default)
+
+        # Task 3: prioritized experience replay (off by default -> uniform deque as in Tasks 1-2)
+        self.use_per = args.per
+        self.per_beta_start = args.per_beta_start
+        self.per_beta_steps = args.per_beta_steps
+        if self.use_per:
+            self.memory = PrioritizedReplayBuffer(args.memory_size, alpha=args.per_alpha, beta=args.per_beta_start)
+        else:
+            self.memory = deque(maxlen=args.memory_size)
         os.makedirs(self.save_dir, exist_ok=True)
+
+    def push_memory(self, transition):
+        if self.use_per:
+            self.memory.add(transition)       # new transitions get max priority
+        else:
+            self.memory.append(transition)
 
     def to_state(self, obs, reset, preprocessor):
         # Atari: grayscale/resize/stack frames (uint8, shape 4x84x84). CartPole: raw 4-dim state.
@@ -206,7 +249,7 @@ class DQNAgent:
                 next_state = self.to_state(next_obs, False, self.preprocessor)
                 # Store `terminated`, not `done`: hitting the 500-step time limit (truncated)
                 # is not a real terminal state, so its target must still bootstrap from s'
-                self.memory.append((state, action, reward, next_state, terminated))
+                self.push_memory((state, action, reward, next_state, terminated))
 
                 if self.env_count % self.train_freq == 0:
                     for _ in range(self.train_per_step):
@@ -228,7 +271,8 @@ class DQNAgent:
                     })
                     ########## YOUR CODE HERE  ##########
                     # Add additional wandb logs for debugging if needed 
-                    
+                    if self.use_per:
+                        wandb.log({"Env Step Count": self.env_count, "PER Beta": self.memory.beta})
                     ########## END OF YOUR CODE ##########   
             print(f"[Eval] Ep: {ep} Total Reward: {total_reward} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
             wandb.log({
@@ -296,7 +340,13 @@ class DQNAgent:
         ########## YOUR CODE HERE (<5 lines) ##########
         # Sample a mini-batch of (s,a,r,s',done) from the replay buffer
         # group all states together, all actions togther and so on
-        batch = random.sample(self.memory, self.batch_size)
+        if self.use_per:
+            # Anneal beta linearly to 1 so the IS correction becomes exact late in training
+            progress = min(1.0, self.env_count / self.per_beta_steps)
+            self.memory.beta = self.per_beta_start + (1.0 - self.per_beta_start) * progress
+            batch, indices, weights = self.memory.sample(self.batch_size)
+        else:
+            batch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         
         ########## END OF YOUR CODE ##########
@@ -325,8 +375,16 @@ class DQNAgent:
                 next_q_values = self.target_net(next_states).max(dim=1).values
             targets = rewards + self.gamma * next_q_values * (1- dones) #Bellman is the G : DL-7 / slide 55
 
-        # DQN loss (handout eq. 1): squared Bellman error between prediction and frozen target
-        loss = nn.functional.mse_loss(q_values, targets)
+        td_errors = targets - q_values
+        if self.use_per:
+            # PER : slide 68 / DL-7 + handout (IS weights, Schaul et al. 2016)
+            # IS-weighted squared Bellman error, then refresh the sampled transitions' priorities
+            weights = torch.from_numpy(weights).to(self.device)
+            loss = (weights * td_errors.pow(2)).mean()
+            self.memory.update_priorities(indices, td_errors.detach().abs().cpu().numpy())
+        else:
+            # DQN loss (handout eq. 1): squared Bellman error between prediction and frozen target
+            loss = nn.functional.mse_loss(q_values, targets)
 
         # Gradient update on q_net only (target_net is never stepped)
         self.optimizer.zero_grad()   # clear gradients from the previous update
@@ -364,6 +422,10 @@ if __name__ == "__main__":
     parser.add_argument("--eval-episodes", type=int, default=5, help="Greedy episodes averaged per evaluation")
     parser.add_argument("--train-freq", type=int, default=1, help="Run training every N environment steps")
     parser.add_argument("--double-dqn", action="store_true", help="Use the Double DQN target")
+    parser.add_argument("--per", action="store_true", help="Use prioritized experience replay")
+    parser.add_argument("--per-alpha", type=float, default=0.6)
+    parser.add_argument("--per-beta-start", type=float, default=0.4)
+    parser.add_argument("--per-beta-steps", type=int, default=1000000, help="Env steps to anneal beta to 1")
     args = parser.parse_args()
 
     project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
