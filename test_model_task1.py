@@ -2,6 +2,7 @@
 
 Usage:
     python test_model_task1.py --model-path LAB5_115550809_task1.pt
+    python test_model_task1.py --model-path LAB5_115550809_task1.pt --render --episodes 3   # watch it play
 """
 import argparse
 
@@ -30,7 +31,8 @@ class DQN(nn.Module):
 
 def evaluate(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    env = gym.make("CartPole-v1")
+    # render_mode="human" opens Gymnasium's pygame window and plays at real-time speed
+    env = gym.make("CartPole-v1", render_mode="human" if args.render else None)
 
     model = DQN(env.action_space.n).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
@@ -59,4 +61,5 @@ if __name__ == "__main__":
     parser.add_argument("--model-path", type=str, required=True, help="Path to trained .pt model")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed-start", type=int, default=0)
+    parser.add_argument("--render", action="store_true", help="Open a window and watch the agent play")
     evaluate(parser.parse_args())
