@@ -1,6 +1,7 @@
 """Evaluate a Task 3 (enhanced DQN on ALE/Pong-v5) snapshot over seeds 0..19.
 
-The Q-network is the same CNN as Task 2; Double DQN, PER and multi-step returns only change training.
+The Q-network is the Task 2 CNN, optionally with a dueling head (detected from the weights);
+Double DQN, PER, multi-step returns and soft target updates only change training.
 
 Usage:
     python test_model_task3.py --model_path LAB5_115550809_task3_600000.pt
@@ -20,9 +21,9 @@ from collections import deque
 import argparse
 
 class DQN(nn.Module):
-    def __init__(self, input_channels, num_actions):
+    def __init__(self, input_channels, num_actions, dueling=False):
         super(DQN, self).__init__()
-        self.network = nn.Sequential(
+        trunk = [
             nn.Conv2d(input_channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
@@ -30,13 +31,22 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(64 * 7 * 7, 512),
-            nn.ReLU(),
-            nn.Linear(512, num_actions)
-        )
+        ]
+        self.dueling = dueling
+        if dueling:
+            # Same layout as dqn.py --dueling: shared conv trunk, then V(s) and A(s, a) streams
+            self.network = nn.Sequential(*trunk)
+            self.value_head = nn.Sequential(nn.Linear(64 * 7 * 7, 512), nn.ReLU(), nn.Linear(512, 1))
+            self.advantage_head = nn.Sequential(nn.Linear(64 * 7 * 7, 512), nn.ReLU(), nn.Linear(512, num_actions))
+        else:
+            self.network = nn.Sequential(*trunk, nn.Linear(64 * 7 * 7, 512), nn.ReLU(), nn.Linear(512, num_actions))
 
     def forward(self, x):
-        return self.network(x / 255.0)
+        h = self.network(x / 255.0)
+        if not self.dueling:
+            return h
+        advantage = self.advantage_head(h)
+        return self.value_head(h) + advantage - advantage.mean(dim=1, keepdim=True)
 class AtariPreprocessor:
     def __init__(self, frame_stack=4):
         self.frame_stack = frame_stack
@@ -80,8 +90,10 @@ def evaluate(args):
     preprocessor = AtariPreprocessor()
     num_actions = env.action_space.n
 
-    model = DQN(4, num_actions).to(device)
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
+    state_dict = torch.load(args.model_path, map_location=device)
+    dueling = any(k.startswith("value_head.") for k in state_dict)   # detect the architecture from the weights
+    model = DQN(4, num_actions, dueling=dueling).to(device)
+    model.load_state_dict(state_dict)
     model.eval()
 
     if args.save_video:

@@ -33,7 +33,7 @@ class DQN(nn.Module):
         - Feel free to change the architecture (e.g. number of hidden layers and the width of each hidden layer) as you like
         - Feel free to add any member variables/functions whenever needed
     """
-    def __init__(self, num_actions, atari=False):
+    def __init__(self, num_actions, atari=False, dueling=False):
         super(DQN, self).__init__()
         # An example:
         #self.network = nn.Sequential(
@@ -70,10 +70,31 @@ class DQN(nn.Module):
             )
         ########## END OF YOUR CODE ##########
 
+        # Dueling networks: slides 70-71 / DL-7 (Wang et al., ICML 2016)
+        # Keep the shared feature layers, replace the single Q output by a value head V(s) and an advantage head A(s, a)
+        self.dueling = dueling
+        if dueling:
+            if atari:
+                # Shared conv trunk up to Flatten (3136 features), then two 512-unit streams as in Wang et al.
+                self.network = nn.Sequential(*list(self.network.children())[:-3])
+                self.value_head = nn.Sequential(nn.Linear(64 * 7 * 7, 512), nn.ReLU(), nn.Linear(512, 1))
+                self.advantage_head = nn.Sequential(nn.Linear(64 * 7 * 7, 512), nn.ReLU(), nn.Linear(512, num_actions))
+            else:
+                # Shared two hidden layers (64 features), then one linear layer per stream
+                self.network = nn.Sequential(*list(self.network.children())[:-1])
+                self.value_head = nn.Linear(64, 1)
+                self.advantage_head = nn.Linear(64, num_actions)
+
     def forward(self, x):
         if self.atari:
             x = x / 255.0  # uint8 pixels -> [0, 1]
-        return self.network(x)
+        if not self.dueling:
+            return self.network(x)
+        h = self.network(x)
+        value = self.value_head(h)            # V(s): how good the state is
+        advantage = self.advantage_head(h)    # A(s, a): how much better each action is
+        # Q = V + A - mean_a A  (slide 70, the identifiable version)
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
 
 
 class AtariPreprocessor:
@@ -178,9 +199,9 @@ class DQNAgent:
         print("Using device:", self.device)
 
 
-        self.q_net = DQN(self.num_actions, atari=self.atari).to(self.device)
+        self.q_net = DQN(self.num_actions, atari=self.atari, dueling=args.dueling).to(self.device)
         self.q_net.apply(init_weights)
-        self.target_net = DQN(self.num_actions, atari=self.atari).to(self.device)
+        self.target_net = DQN(self.num_actions, atari=self.atari, dueling=args.dueling).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=args.lr)
 
@@ -478,6 +499,7 @@ if __name__ == "__main__":
     parser.add_argument("--per-beta-start", type=float, default=0.4)
     parser.add_argument("--per-beta-steps", type=int, default=1000000, help="Env steps to anneal beta to 1")
     parser.add_argument("--n-step", type=int, default=1, help="Multi-step return length (1 = vanilla)")
+    parser.add_argument("--dueling", action="store_true", help="Dueling network head: Q = V + A - mean(A)")
     parser.add_argument("--snapshot-steps", type=str, default="", help='e.g. "600000,1000000,1500000,2000000,2500000"')
     parser.add_argument("--max-env-steps", type=int, default=0, help="Stop after this many env steps (0 = no limit)")
     args = parser.parse_args()
