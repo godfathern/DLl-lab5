@@ -210,6 +210,10 @@ class DQNAgent:
             self.memory = PrioritizedReplayBuffer(args.memory_size, alpha=args.per_alpha, beta=args.per_beta_start)
         else:
             self.memory = deque(maxlen=args.memory_size)
+
+        # Task 3: multi-step return (n_step = 1 -> plain 1-step target as in Tasks 1-2)
+        self.n_step = args.n_step
+        self.n_step_buffer = deque(maxlen=self.n_step)   # last n raw transitions of the current episode
         os.makedirs(self.save_dir, exist_ok=True)
 
     def push_memory(self, transition):
@@ -217,6 +221,29 @@ class DQNAgent:
             self.memory.add(transition)       # new transitions get max priority
         else:
             self.memory.append(transition)
+
+    def n_step_transition(self):
+        # Slide 66-69 / DL-7
+        # Turn the n_step_buffer into one transition starting at its oldest entry:
+        # (s_t, a_t, R = sum_k gamma^k r_{t+k}, s_{t+k}, done_{t+k}, gamma^k), k = len(buffer).
+        # Episodes are flushed at their end, so a terminal step can only be the last entry.
+        ret = sum((self.gamma ** k) * t[2] for k, t in enumerate(self.n_step_buffer))
+        state, action = self.n_step_buffer[0][0], self.n_step_buffer[0][1]
+        next_state, terminated = self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
+        return (state, action, ret, next_state, terminated, self.gamma ** len(self.n_step_buffer))
+
+    def store_transition(self, state, action, reward, next_state, terminated, episode_end):
+        # With n_step = 1 this stores (s, a, r, s', terminated, gamma): plain 1-step DQN
+        self.n_step_buffer.append((state, action, reward, next_state, terminated))
+        if len(self.n_step_buffer) == self.n_step:
+            self.push_memory(self.n_step_transition())
+        if episode_end:
+            # The last n-1 starting points never collect n rewards: store them with shorter returns
+            if len(self.n_step_buffer) == self.n_step:
+                self.n_step_buffer.popleft()          # already stored just above
+            while self.n_step_buffer:
+                self.push_memory(self.n_step_transition())
+                self.n_step_buffer.popleft()
 
     def to_state(self, obs, reset, preprocessor):
         # Atari: grayscale/resize/stack frames (uint8, shape 4x84x84). CartPole: raw 4-dim state.
@@ -249,7 +276,8 @@ class DQNAgent:
                 next_state = self.to_state(next_obs, False, self.preprocessor)
                 # Store `terminated`, not `done`: hitting the 500-step time limit (truncated)
                 # is not a real terminal state, so its target must still bootstrap from s'
-                self.push_memory((state, action, reward, next_state, terminated))
+                episode_end = done or step_count + 1 >= self.max_episode_steps
+                self.store_transition(state, action, reward, next_state, terminated, episode_end)
 
                 if self.env_count % self.train_freq == 0:
                     for _ in range(self.train_per_step):
@@ -347,7 +375,8 @@ class DQNAgent:
             batch, indices, weights = self.memory.sample(self.batch_size)
         else:
             batch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        # discounts = gamma^k, where k is the number of rewards summed in the (multi-step) return
+        states, actions, rewards, next_states, dones, discounts = zip(*batch)
         
         ########## END OF YOUR CODE ##########
 
@@ -361,6 +390,7 @@ class DQNAgent:
         actions = torch.tensor(actions, dtype=torch.int64).to(self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
+        discounts = torch.tensor(discounts, dtype=torch.float32).to(self.device)
         q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
         ########## YOUR CODE HERE (~10 lines) ##########
@@ -373,7 +403,8 @@ class DQNAgent:
                 next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
             else:
                 next_q_values = self.target_net(next_states).max(dim=1).values
-            targets = rewards + self.gamma * next_q_values * (1- dones) #Bellman is the G : DL-7 / slide 55
+            # Bellman target (DL-7 / slide 55); discounts = gamma for 1-step, gamma^n for n-step returns
+            targets = rewards + discounts * next_q_values * (1 - dones)
 
         td_errors = targets - q_values
         if self.use_per:
@@ -426,6 +457,7 @@ if __name__ == "__main__":
     parser.add_argument("--per-alpha", type=float, default=0.6)
     parser.add_argument("--per-beta-start", type=float, default=0.4)
     parser.add_argument("--per-beta-steps", type=int, default=1000000, help="Env steps to anneal beta to 1")
+    parser.add_argument("--n-step", type=int, default=1, help="Multi-step return length (1 = vanilla)")
     args = parser.parse_args()
 
     project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
