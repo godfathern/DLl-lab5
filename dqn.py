@@ -172,6 +172,7 @@ class DQNAgent:
         self.memory = deque(maxlen=args.memory_size)
         self.eval_episodes = args.eval_episodes
         self.train_freq = args.train_freq
+        self.double_dqn = args.double_dqn   # Task 3: Double DQN target (off by default)
         os.makedirs(self.save_dir, exist_ok=True)
 
     def to_state(self, obs, reset, preprocessor):
@@ -313,9 +314,15 @@ class DQNAgent:
         q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
         ########## YOUR CODE HERE (~10 lines) ##########
+        # Double DQN : slides 34-35-67 / DL-7
         # Implement the loss function of DQN and the gradient updates 
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(dim=1).values
+            if self.double_dqn:
+                # Double DQN (handout eq. 2): online net selects a', target net evaluates it
+                next_actions = self.q_net(next_states).argmax(dim=1, keepdim=True)
+                next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
+            else:
+                next_q_values = self.target_net(next_states).max(dim=1).values
             targets = rewards + self.gamma * next_q_values * (1- dones) #Bellman is the G : DL-7 / slide 55
 
         # DQN loss (handout eq. 1): squared Bellman error between prediction and frozen target
@@ -356,6 +363,7 @@ if __name__ == "__main__":
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--eval-episodes", type=int, default=5, help="Greedy episodes averaged per evaluation")
     parser.add_argument("--train-freq", type=int, default=1, help="Run training every N environment steps")
+    parser.add_argument("--double-dqn", action="store_true", help="Use the Double DQN target")
     args = parser.parse_args()
 
     project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
