@@ -5,3 +5,4 @@ results/
 wandb/
 .DS_Store
 *.log
+*.pt
