@@ -21,13 +21,13 @@ This lab implements Deep Q-Networks (DQN) and evaluates them on two environments
 **Main findings so far**
 
 - **Task 1:** Vanilla DQN with a 4 → 64 → 64 → 2 MLP solves CartPole. The best snapshot (saved at ≈ 95.7k environment steps) scores **500.00 on all 20 evaluation seeds (0–19)**, the maximum possible.
-- **Hyperparameters matter a lot.** With the same algorithm, configurations ranged from never learning at all to solving the task reliably (Section 4.4). The learning rate was the most important setting: 1e-3 learned fast but kept collapsing, 1e-4 was stable but too slow, and 5e-4 worked best.
+- **Hyperparameters matter a lot.** With the same algorithm, configurations ranged from never learning at all to solving the task reliably (Section 5.1). The learning rate was the most important setting: 1e-3 learned fast but kept collapsing, 1e-4 was stable but too slow, and 5e-4 worked best.
 - **Time-limit truncation must not be treated as termination.** CartPole cuts episodes off at 500 steps; storing that as a terminal transition is a known source of biased targets, so only real terminations zero out the bootstrap term (Section 2.1).
 - **Task 2:** Vanilla DQN with the Nature-DQN CNN learns Pong from pixels. The 3-game evaluation average first reached 19 at ≈ 0.95M environment steps. The submitted snapshot (≈ 3.09M steps) averages **19.10 over seeds 0–19**.
 - **Model selection needs a reliable evaluation.** On Pong, the "best" model chosen during training from a 3-game average scored only 17.40 on the 20-seed test, while an earlier checkpoint scored 19.10 (Section 4.2).
 - **TODO:** Task 3 findings.
 
-**Organization.** Section 2 describes the implementation (Bellman error, Double DQN, PER, multi-step return, W&B logging). Section 3 lists the evaluation commands and screenshots. Section 4 shows training curves and analysis. Section 5 covers additional experiments.
+**Organization.** Section 2 describes the implementation (Bellman error, Double DQN, PER, multi-step return, W&B logging). Section 3 lists the evaluation commands and screenshots. Section 4 shows training curves and analysis. Section 5 covers additional experiments (bonus), including the CartPole hyperparameter study.
 
 ---
 
@@ -208,6 +208,15 @@ python test_model_task1.py --model-path LAB5_115550809_task1.pt
 
 ![Task 1 evaluation output (seeds 0–19)](screenshots/task1_eval.png)
 
+**How this snapshot was obtained.** The template's default hyperparameters did not get there: with ε decay 0.999999 and a 50k-step replay warm-up, the agent stays almost fully random for the whole CartPole training budget. Reaching the maximum score of 500 took a systematic search:
+
+- **8 configurations** (A–H) in two rounds, varying the learning rate (1e-4 to 1e-3), target-network update period (200 to 2,000 updates), batch size, replay warm-up and ε decay;
+- a **fix to the replay targets**, so that time-limit truncation at step 500 is not stored as a terminal state (Section 2.1);
+- **averaged evaluation during training** (5 greedy episodes instead of 1), so `best_model.pt` is not chosen from a single lucky 500;
+- the best snapshots of the round-2 candidates **re-checked on seeds 0–19**. Only configuration E (lr 5e-4, target update 500, batch 64) was both stable and perfect, and it was then retrained with W&B logging as the final run.
+
+Results ranged from runs that never learned (best eval 14) to runs that hit 500 but repeatedly collapsed. The full comparison is in **Section 5.1**, and the final training curve is in **Section 4.1**.
+
 ### 3.2 Task 2 — Pong-v5
 
 **Command**
@@ -226,16 +235,20 @@ python test_model.py --model-path LAB5_115550809_task2.pt --env-steps 3092538
 
 ### 3.3 Task 3 — Enhanced DQN on Pong-v5 — TODO
 
+> **Provisional:** these are the run 1 snapshots (Double DQN + PER + 3-step, Section 4.3). They will be replaced by run 2 if run 2 scores higher.
+
 | Snapshot | Env steps | Average score (20 episodes) | Screenshot |
 |---|---|---|---|
-| `LAB5_115550809_task3_600000.pt` | 600k | TODO | ![](screenshots/task3_600k.png) |
-| `LAB5_115550809_task3_1000000.pt` | 1M | TODO | ![](screenshots/task3_1M.png) |
-| `LAB5_115550809_task3_1500000.pt` | 1.5M | TODO | ![](screenshots/task3_1.5M.png) |
-| `LAB5_115550809_task3_2000000.pt` | 2M | TODO | ![](screenshots/task3_2M.png) |
-| `LAB5_115550809_task3_2500000.pt` | 2.5M | TODO | ![](screenshots/task3_2.5M.png) |
-| `LAB5_115550809_task3_best.pt` | TODO | TODO | ![](screenshots/task3_best.png) |
+| `LAB5_115550809_task3_600000.pt` | 600k | 13.05 | ![](screenshots/task3_600k.png) |
+| `LAB5_115550809_task3_1000000.pt` | 1M | 11.05 | ![](screenshots/task3_1M.png) |
+| `LAB5_115550809_task3_1500000.pt` | 1.5M | 13.50 | ![](screenshots/task3_1.5M.png) |
+| `LAB5_115550809_task3_2000000.pt` | 2M | 13.70 | ![](screenshots/task3_2M.png) |
+| `LAB5_115550809_task3_2500000.pt` | 2.5M | 13.55 | ![](screenshots/task3_2.5M.png) |
+| `LAB5_115550809_task3_best.pt` | ≈ 2.36M | 15.25 | ![](screenshots/task3_best.png) |
 
-**First time reaching score 19:** TODO env steps (justify with the W&B curve).
+Command: `python test_model_task3.py --model-path LAB5_115550809_task3_600000.pt` (same for each file; seeds 0–19).
+
+**First time reaching score 19:** not reached by any run 1 snapshot (TODO: update with run 2).
 
 ---
 
@@ -340,6 +353,55 @@ The ep1400 checkpoint was evaluated twice and gave 19.10 both times, so it is su
 
 ![Task 3 vs Task 2: Eval Reward vs Env Step Count](screenshots/task3_wandb_eval.png)
 
+#### Run 1: Double DQN + PER + 3-step return on top of the Task 2 setup
+
+W&B run: `task3-full`. I first added the three required techniques to the Task 2 agent without retuning anything else, to see what they give on their own.
+
+| Setting | Run 1 | Task 2 (vanilla) |
+|---|---|---|
+| Double DQN target | yes | no |
+| PER (α / β start → 1 over) | 0.6 / 0.4 → 1 over 1M steps | uniform |
+| Multi-step return | n = 3 | n = 1 |
+| Learning rate, batch, memory | 1e-4, 32, 100k | same |
+| Loss | IS-weighted squared TD error, gradient-norm clip 10 | MSE, gradient-norm clip 10 |
+| Target network | hard copy every 1,000 updates | same |
+| Replay start size | 20,000 | 50,000 |
+| ε decay (per update) / min | 0.99998 / 0.02 | 0.999988 / 0.02 |
+| Evaluation during training | 5 games every 10 games | 3 games every 20 games |
+| Budget | stopped at 2.5M env steps | 5.9M env steps |
+
+**Result: no snapshot reached 19.** All snapshots were evaluated with `test_model_task3.py` on seeds 0–19:
+
+| Snapshot | 20-seed average | Min / max | Games ≥ 19 |
+|---|---|---|---|
+| 600k | 13.05 | 8 / 19 | 1 |
+| 1M | 11.05 | 3 / 17 | 0 |
+| 1.5M | 13.50 | 4 / 21 | 3 |
+| 2M | 13.70 | −1 / 20 | 1 |
+| 2.5M | 13.55 | −1 / 20 | 4 |
+| best (17.6 on 5 games) | 15.25 | 10 / 20 | 2 |
+
+**Comparison with vanilla DQN at the same budget.** Task 2 did not save checkpoints at exactly these step counts, so the nearest Task 2 checkpoints were evaluated with the same script and seeds:
+
+| Env steps | Vanilla (Task 2), 20-seed average | Run 1, 20-seed average |
+|---|---|---|
+| ≈ 0.6M | 13.80 (ep300, 0.66M) | 13.05 |
+| ≈ 1M | 17.60 (ep400, 0.90M) / 16.35 (ep500, 1.12M) | 11.05 |
+| ≈ 2.5M | 15.55 (ep1100, 2.44M) / 16.25 (ep1200, 2.66M) | 13.55 |
+
+**Observation.** The naïve combination learned about as fast as vanilla DQN up to ≈ 0.6M steps, then stopped improving at ≈ 11–15 while vanilla kept climbing to 16–18. At ≈ 1M steps it was about 5 points behind. So adding the three techniques on their own did **not** improve sample efficiency in this run; it made the plateau lower.
+
+**Likely causes.**
+
+- **PER feeds the largest errors back on purpose.** Transitions with a large TD error are replayed most often. With a squared loss, those transitions also produce the largest gradients. The IS weights and the gradient clip only partly offset this, so updates stay noisy.
+- **The 3-step target is noisier.** It sums three rewards, and in Pong (25% sticky actions) the ball can still be deflected unexpectedly. Its variance adds to the noise above.
+- **The hard target copy makes the target jump every 1,000 updates.** Combined with the two points above, the online network keeps chasing a moving, noisy target.
+- **Other confounds.** Run 1 also used a smaller replay start size and a faster ε decay than Task 2, and each method was trained only once. Pong results vary between training seeds, so differences of 2–3 points may partly be chance. The ≈ 5-point gap at 1M steps is less likely to be chance alone.
+
+**What I changed for run 2.** DL-7 lists two further ideas that target these issues: a **dueling network head** (slides 70–71), which learns V(s) once per state instead of six separate Q-values, and a **soft target update** (slide 55, "updated only periodically or softly"), which moves the target network a little every update instead of jumping every 1,000 updates. Run 2 keeps every setting of run 1 and adds `--dueling --tau 0.001`.
+
+#### Run 2: + dueling head and soft target update — TODO (training)
+
 - Sample efficiency with vs. without enhancements: TODO
 - Ablation (each technique separately): TODO
 
@@ -349,11 +411,16 @@ The ep1400 checkpoint was evaluated twice and gave 19.10 both times, so it is su
 | + Double DQN only | TODO | TODO |
 | + PER only | TODO | TODO |
 | + Multi-step only | TODO | TODO |
-| All three (Task 3) | TODO | TODO |
+| All three (Task 3, run 1) | not reached on 20 seeds within 2.5M | 15.25 (20 seeds, best snapshot) |
+| All three + dueling + soft target (run 2) | TODO | TODO |
 
-### 4.4 Hyperparameter study on CartPole
+---
 
-Before the final run, eight configurations were compared, each for a single seed with W&B disabled. The "best eval" column is the best 5-episode average reached during training; the last column is the best snapshot evaluated on seeds 0–19.
+## 5. Additional Analysis (Bonus)
+
+### 5.1 Hyperparameter study on CartPole
+
+The template's default hyperparameters suit Pong rather than CartPole: ε decay 0.999999 keeps exploration near 100% for millions of updates, and a 50k replay start delays learning by about half of what CartPole needs. To reach the 480 target efficiently, I ran a small hyperparameter study. Before the final run, eight configurations were compared, each for a single seed with W&B disabled. The "best eval" column is the best 5-episode average reached during training; the last column is the best snapshot evaluated on seeds 0–19.
 
 **Round 1** (600 episodes; truncation stored as terminal)
 
@@ -380,11 +447,9 @@ Before the final run, eight configurations were compared, each for a single seed
 - **Truncation handling.** Runs B→G and C→H differ only in the truncation fix and gave similar results within this budget, so this single-seed experiment does not show a clear empirical effect. The fix is kept because it makes the targets correct.
 - **Limitation.** Every configuration was run with one seed, so differences of a few dozen reward points are within run-to-run noise.
 
----
+### 5.2 Other training strategies — TODO (optional)
 
-## 5. Additional Analysis (Bonus) — optional
-
-TODO: e.g. Huber vs. MSE loss, soft target updates, learning-rate schedules, reward clipping on Pong.
+Ideas: Huber vs. MSE loss, soft target updates, learning-rate schedules.
 
 ---
 
