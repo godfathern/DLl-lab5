@@ -54,7 +54,12 @@ class AtariPreprocessor:
         return stacked
         
 def evaluate(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -71,8 +76,10 @@ def evaluate(args):
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.eval()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    if args.save_video:
+        os.makedirs(args.output_dir, exist_ok=True)
 
+    rewards = []
     for ep in range(args.episodes):
         obs, _ = env.reset(seed=args.seed + ep)
         state = preprocessor.reset(obs)
@@ -82,8 +89,8 @@ def evaluate(args):
         frame_idx = 0
 
         while not done:
-            frame = env.render()
-            frames.append(frame)
+            if args.save_video:
+                frames.append(env.render())
 
             state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
             with torch.no_grad():
@@ -95,17 +102,24 @@ def evaluate(args):
             state = preprocessor.step(next_obs)
             frame_idx += 1
 
-        out_path = os.path.join(args.output_dir, f"eval_ep{ep}.mp4")
-        with imageio.get_writer(out_path, fps=30) as video:
-            for f in frames:
-                video.append_data(f)
-        print(f"Saved episode {ep} with total reward {total_reward} → {out_path}")
+        rewards.append(total_reward)
+        print(f"Environment steps: {args.env_steps}, seed: {args.seed + ep}, eval reward: {total_reward:.0f}")
+        if args.save_video:
+            out_path = os.path.join(args.output_dir, f"eval_ep{ep}.mp4")
+            with imageio.get_writer(out_path, fps=30) as video:
+                for f in frames:
+                    video.append_data(f)
+            print(f"Saved video → {out_path}")
+
+    print(f"Average reward: {np.mean(rewards):.2f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, required=True, help="Path to trained .pt model")
     parser.add_argument("--output-dir", type=str, default="./eval_videos")
-    parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=313551076, help="Random seed for evaluation")
+    parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=0, help="First evaluation seed (episodes use seed, seed+1, ...)")
+    parser.add_argument("--save-video", action="store_true", help="Also record an mp4 per episode")
+    parser.add_argument("--env-steps", type=str, default="-", help="Training env steps of this snapshot (printed only)")
     args = parser.parse_args()
     evaluate(args)

@@ -33,27 +33,46 @@ class DQN(nn.Module):
         - Feel free to change the architecture (e.g. number of hidden layers and the width of each hidden layer) as you like
         - Feel free to add any member variables/functions whenever needed
     """
-    def __init__(self, num_actions):
+    def __init__(self, num_actions, atari=False):
         super(DQN, self).__init__()
-        # An example: 
+        # An example:
         #self.network = nn.Sequential(
         #    nn.Linear(input_dim, 64),
         #    nn.ReLU(),
         #    nn.Linear(64, 64),
         #    nn.ReLU(),
         #    nn.Linear(64, num_actions)
-        #)       
+        #)
         ########## YOUR CODE HERE (5~10 lines) ##########
-        self.network = nn.Sequential(
-           nn.Linear(4, 64),
-           nn.ReLU(),
-           nn.Linear(64, 64),
-           nn.ReLU(),
-           nn.Linear(64, num_actions)
-        )     
+        self.atari = atari
+        if atari:
+            # Pong: CNN over 4 stacked 84x84 grayscale frames
+            self.network = nn.Sequential(
+                nn.Conv2d(4, 32, kernel_size=8, stride=4),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(64 * 7 * 7, 512),
+                nn.ReLU(),
+                nn.Linear(512, num_actions)
+            )
+        else:
+            # CartPole: MLP over the 4-dim state
+            self.network = nn.Sequential(
+               nn.Linear(4, 64),
+               nn.ReLU(),
+               nn.Linear(64, 64),
+               nn.ReLU(),
+               nn.Linear(64, num_actions)
+            )
         ########## END OF YOUR CODE ##########
 
     def forward(self, x):
+        if self.atari:
+            x = x / 255.0  # uint8 pixels -> [0, 1]
         return self.network(x)
 
 
@@ -116,15 +135,23 @@ class DQNAgent:
         self.env = gym.make(env_name, render_mode="rgb_array")
         self.test_env = gym.make(env_name, render_mode="rgb_array")
         self.num_actions = self.env.action_space.n
+        self.atari = env_name.startswith("ALE/")
+        # Separate frame stacks for the training and evaluation envs so evaluation can't clobber training state
         self.preprocessor = AtariPreprocessor()
+        self.test_preprocessor = AtariPreprocessor()
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")   # Apple-silicon GPU
+        else:
+            self.device = torch.device("cpu")
         print("Using device:", self.device)
 
 
-        self.q_net = DQN(self.num_actions).to(self.device)
+        self.q_net = DQN(self.num_actions, atari=self.atari).to(self.device)
         self.q_net.apply(init_weights)
-        self.target_net = DQN(self.num_actions).to(self.device)
+        self.target_net = DQN(self.num_actions, atari=self.atari).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=args.lr)
 
@@ -136,7 +163,7 @@ class DQNAgent:
 
         self.env_count = 0
         self.train_count = 0
-        self.best_reward = 0  # Initilized to 0 for CartPole and to -21 for Pong
+        self.best_reward = -21 if self.atari else 0  # Initilized to 0 for CartPole and to -21 for Pong
         self.max_episode_steps = args.max_episode_steps
         self.replay_start_size = args.replay_start_size
         self.target_update_frequency = args.target_update_frequency
@@ -144,7 +171,14 @@ class DQNAgent:
         self.save_dir = args.save_dir
         self.memory = deque(maxlen=args.memory_size)
         self.eval_episodes = args.eval_episodes
+        self.train_freq = args.train_freq
         os.makedirs(self.save_dir, exist_ok=True)
+
+    def to_state(self, obs, reset, preprocessor):
+        # Atari: grayscale/resize/stack frames (uint8, shape 4x84x84). CartPole: raw 4-dim state.
+        if not self.atari:
+            return obs
+        return preprocessor.reset(obs) if reset else preprocessor.step(obs)
 
     def select_action(self, state):
         if random.random() < self.epsilon:
@@ -158,7 +192,7 @@ class DQNAgent:
         for ep in range(episodes):
             obs, _ = self.env.reset()
 
-            state = obs
+            state = self.to_state(obs, True, self.preprocessor)
             done = False
             total_reward = 0
             step_count = 0
@@ -168,13 +202,14 @@ class DQNAgent:
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
                 
-                next_state = next_obs
+                next_state = self.to_state(next_obs, False, self.preprocessor)
                 # Store `terminated`, not `done`: hitting the 500-step time limit (truncated)
                 # is not a real terminal state, so its target must still bootstrap from s'
                 self.memory.append((state, action, reward, next_state, terminated))
 
-                for _ in range(self.train_per_step):
-                    self.train()
+                if self.env_count % self.train_freq == 0:
+                    for _ in range(self.train_per_step):
+                        self.train()
 
                 state = next_state
                 total_reward += reward
@@ -230,7 +265,7 @@ class DQNAgent:
         episode_rewards = []
         for _ in range(self.eval_episodes):
             obs, _ = self.test_env.reset()
-            state = obs
+            state = self.to_state(obs, True, self.test_preprocessor)
             done = False
             total_reward = 0
 
@@ -241,7 +276,7 @@ class DQNAgent:
                 next_obs, reward, terminated, truncated, _ = self.test_env.step(action)
                 done = terminated or truncated
                 total_reward += reward
-                state = next_obs
+                state = self.to_state(next_obs, False, self.test_preprocessor)
             episode_rewards.append(total_reward)
 
         return float(np.mean(episode_rewards))
@@ -269,8 +304,9 @@ class DQNAgent:
         # NOTE: Enable this part after you finish the mini-batch sampling
         
         #for a batch of 32, the network outputs shape [32, 2] - one value for pushing left and one for pushing right
-        states = torch.from_numpy(np.array(states).astype(np.float32)).to(self.device)
-        next_states = torch.from_numpy(np.array(next_states).astype(np.float32)).to(self.device)
+        # Move raw arrays (uint8 for Atari) to the device first, then convert: 4x less data to copy
+        states = torch.from_numpy(np.array(states)).to(self.device).float()
+        next_states = torch.from_numpy(np.array(next_states)).to(self.device).float()
         actions = torch.tensor(actions, dtype=torch.int64).to(self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
@@ -302,6 +338,8 @@ class DQNAgent:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--env", type=str, default="CartPole-v1", help='"CartPole-v1" (Task 1) or "ALE/Pong-v5" (Tasks 2-3)')
+    parser.add_argument("--wandb-project", type=str, default=None, help="Defaults to a per-environment project")
     parser.add_argument("--save-dir", type=str, default="./results")
     parser.add_argument("--wandb-run-name", type=str, default="cartpole-run")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -317,8 +355,10 @@ if __name__ == "__main__":
     parser.add_argument("--train-per-step", type=int, default=1)
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--eval-episodes", type=int, default=5, help="Greedy episodes averaged per evaluation")
+    parser.add_argument("--train-freq", type=int, default=1, help="Run training every N environment steps")
     args = parser.parse_args()
 
-    wandb.init(project="DLP-Lab5-DQN-CartPole", name=args.wandb_run_name, save_code=True)
-    agent = DQNAgent(args=args)
+    project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
+    wandb.init(project=project, name=args.wandb_run_name, config=vars(args), save_code=True)
+    agent = DQNAgent(env_name=args.env, args=args)
     agent.run(episodes=args.episodes)
