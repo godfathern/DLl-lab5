@@ -199,21 +199,24 @@ class DQNAgent:
         self.train_per_step = args.train_per_step
         self.save_dir = args.save_dir
         self.eval_episodes = args.eval_episodes
+        self.eval_freq = args.eval_freq
         self.train_freq = args.train_freq
-        self.double_dqn = args.double_dqn   # Task 3: Double DQN target (off by default)
 
-        # Task 3: prioritized experience replay (off by default -> uniform deque as in Tasks 1-2)
+        # Task 3 enhancements (all off by default, so Tasks 1-2 behave exactly as before)
+        self.double_dqn = args.double_dqn
         self.use_per = args.per
+        self.n_step = args.n_step
         self.per_beta_start = args.per_beta_start
         self.per_beta_steps = args.per_beta_steps
         if self.use_per:
             self.memory = PrioritizedReplayBuffer(args.memory_size, alpha=args.per_alpha, beta=args.per_beta_start)
         else:
             self.memory = deque(maxlen=args.memory_size)
-
-        # Task 3: multi-step return (n_step = 1 -> plain 1-step target as in Tasks 1-2)
-        self.n_step = args.n_step
         self.n_step_buffer = deque(maxlen=self.n_step)   # last n raw transitions of the current episode
+
+        # Snapshots at fixed environment steps (Task 3 grading) and an optional step budget
+        self.snapshot_steps = {int(s) for s in args.snapshot_steps.split(",") if s.strip()}
+        self.max_env_steps = args.max_env_steps
         os.makedirs(self.save_dir, exist_ok=True)
 
     def push_memory(self, transition):
@@ -259,7 +262,13 @@ class DQNAgent:
             q_values = self.q_net(state_tensor)
         return q_values.argmax().item()
 
+    def save_snapshot(self):
+        path = os.path.join(self.save_dir, f"snapshot_{self.env_count}.pt")
+        torch.save(self.q_net.state_dict(), path)
+        print(f"Saved snapshot at {self.env_count} env steps to {path}")
+
     def run(self, episodes=1000):
+        budget_reached = False
         for ep in range(episodes):
             obs, _ = self.env.reset()
 
@@ -268,11 +277,11 @@ class DQNAgent:
             total_reward = 0
             step_count = 0
 
-            while not done and step_count < self.max_episode_steps:
+            while not done and step_count < self.max_episode_steps and not budget_reached:
                 action = self.select_action(state)
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
-                
+
                 next_state = self.to_state(next_obs, False, self.preprocessor)
                 # Store `terminated`, not `done`: hitting the 500-step time limit (truncated)
                 # is not a real terminal state, so its target must still bootstrap from s'
@@ -288,7 +297,12 @@ class DQNAgent:
                 self.env_count += 1
                 step_count += 1
 
-                if self.env_count % 1000 == 0:                 
+                if self.env_count in self.snapshot_steps:
+                    self.save_snapshot()
+                if self.max_env_steps and self.env_count >= self.max_env_steps:
+                    budget_reached = True
+
+                if self.env_count % 1000 == 0:
                     print(f"[Collect] Ep: {ep} Step: {step_count} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
                     wandb.log({
                         "Episode": ep,
@@ -298,10 +312,10 @@ class DQNAgent:
                         "Epsilon": self.epsilon
                     })
                     ########## YOUR CODE HERE  ##########
-                    # Add additional wandb logs for debugging if needed 
+                    # Add additional wandb logs for debugging if needed
                     if self.use_per:
                         wandb.log({"Env Step Count": self.env_count, "PER Beta": self.memory.beta})
-                    ########## END OF YOUR CODE ##########   
+                    ########## END OF YOUR CODE ##########
             print(f"[Eval] Ep: {ep} Total Reward: {total_reward} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
             wandb.log({
                 "Episode": ep,
@@ -319,7 +333,7 @@ class DQNAgent:
                 torch.save(self.q_net.state_dict(), model_path)
                 print(f"Saved model checkpoint to {model_path}")
 
-            if ep % 20 == 0:
+            if ep % self.eval_freq == 0 or budget_reached:
                 eval_reward = self.evaluate()
                 if eval_reward > self.best_reward:
                     self.best_reward = eval_reward
@@ -332,6 +346,10 @@ class DQNAgent:
                     "Update Count": self.train_count,
                     "Eval Reward": eval_reward
                 })
+
+            if budget_reached:
+                print(f"Reached the budget of {self.max_env_steps} env steps, stopping.")
+                break
 
     def evaluate(self):
         # Average over several greedy episodes so "best model" isn't picked from one lucky run
@@ -377,7 +395,7 @@ class DQNAgent:
             batch = random.sample(self.memory, self.batch_size)
         # discounts = gamma^k, where k is the number of rewards summed in the (multi-step) return
         states, actions, rewards, next_states, dones, discounts = zip(*batch)
-        
+
         ########## END OF YOUR CODE ##########
 
         # Convert the states, actions, rewards, next_states, and dones into torch tensors
@@ -452,12 +470,16 @@ if __name__ == "__main__":
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--eval-episodes", type=int, default=5, help="Greedy episodes averaged per evaluation")
     parser.add_argument("--train-freq", type=int, default=1, help="Run training every N environment steps")
+    parser.add_argument("--eval-freq", type=int, default=20, help="Evaluate every N training episodes")
+    # Task 3: enhancements
     parser.add_argument("--double-dqn", action="store_true", help="Use the Double DQN target")
     parser.add_argument("--per", action="store_true", help="Use prioritized experience replay")
     parser.add_argument("--per-alpha", type=float, default=0.6)
     parser.add_argument("--per-beta-start", type=float, default=0.4)
     parser.add_argument("--per-beta-steps", type=int, default=1000000, help="Env steps to anneal beta to 1")
     parser.add_argument("--n-step", type=int, default=1, help="Multi-step return length (1 = vanilla)")
+    parser.add_argument("--snapshot-steps", type=str, default="", help='e.g. "600000,1000000,1500000,2000000,2500000"')
+    parser.add_argument("--max-env-steps", type=int, default=0, help="Stop after this many env steps (0 = no limit)")
     args = parser.parse_args()
 
     project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
