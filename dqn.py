@@ -217,6 +217,7 @@ class DQNAgent:
         self.max_episode_steps = args.max_episode_steps
         self.replay_start_size = args.replay_start_size
         self.target_update_frequency = args.target_update_frequency
+        self.tau = args.tau
         self.train_per_step = args.train_per_step
         self.save_dir = args.save_dir
         self.eval_episodes = args.eval_episodes
@@ -463,7 +464,14 @@ class DQNAgent:
         self.optimizer.step()        # Adam moves the weights
         ########## END OF YOUR CODE ##########
 
-        if self.train_count % self.target_update_frequency == 0:
+        # Target network: slide 55 / DL-7, "updated only periodically or softly"
+        if self.tau > 0:
+            # Soft (Polyak) update every train step: w_bar <- tau * w + (1 - tau) * w_bar
+            with torch.no_grad():
+                for w_bar, w in zip(self.target_net.parameters(), self.q_net.parameters()):
+                    w_bar.mul_(1 - self.tau).add_(w, alpha=self.tau)
+        elif self.train_count % self.target_update_frequency == 0:
+            # Periodic (hard) update: copy q_net every target_update_frequency train steps
             self.target_net.load_state_dict(self.q_net.state_dict())
 
         # NOTE: Enable this part if "loss" is defined
@@ -500,6 +508,7 @@ if __name__ == "__main__":
     parser.add_argument("--per-beta-steps", type=int, default=1000000, help="Env steps to anneal beta to 1")
     parser.add_argument("--n-step", type=int, default=1, help="Multi-step return length (1 = vanilla)")
     parser.add_argument("--dueling", action="store_true", help="Dueling network head: Q = V + A - mean(A)")
+    parser.add_argument("--tau", type=float, default=0.0, help="Soft target update rate (0 = hard update every --target-update-frequency)")
     parser.add_argument("--snapshot-steps", type=str, default="", help='e.g. "600000,1000000,1500000,2000000,2500000"')
     parser.add_argument("--max-env-steps", type=int, default=0, help="Stop after this many env steps (0 = no limit)")
     args = parser.parse_args()
