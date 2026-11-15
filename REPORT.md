@@ -235,7 +235,7 @@ python test_model.py --model-path LAB5_115550809_task2.pt --env-steps 3092538
 
 ### 3.3 Task 3 — Enhanced DQN on Pong-v5 — TODO
 
-> **Provisional:** these are the run 1 snapshots (Double DQN + PER + 3-step, Section 4.3). They will be replaced by run 2 if run 2 scores higher.
+> **Provisional:** these are the run 1 snapshots (Double DQN + PER + 3-step, Section 4.3). Run 2 (Section 4.3) scored lower at every snapshot, so run 1 is kept unless a later run does better.
 
 | Snapshot | Env steps | Average score (20 episodes) | Screenshot |
 |---|---|---|---|
@@ -248,7 +248,7 @@ python test_model.py --model-path LAB5_115550809_task2.pt --env-steps 3092538
 
 Command: `python test_model_task3.py --model-path LAB5_115550809_task3_600000.pt` (same for each file; seeds 0–19).
 
-**First time reaching score 19:** not reached by any run 1 snapshot (TODO: update with run 2).
+**First time reaching score 19:** not reached by any run 1 snapshot within 2.5M steps (best: 15.25 on seeds 0–19).
 
 ---
 
@@ -400,19 +400,110 @@ W&B run: `task3-full`. I first added the three required techniques to the Task 2
 
 **What I changed for run 2.** DL-7 lists two further ideas that target these issues: a **dueling network head** (slides 70–71), which learns V(s) once per state instead of six separate Q-values, and a **soft target update** (slide 55, "updated only periodically or softly"), which moves the target network a little every update instead of jumping every 1,000 updates. Run 2 keeps every setting of run 1 and adds `--dueling --tau 0.001`.
 
-#### Run 2: + dueling head and soft target update — TODO (training)
+#### Run 2: + dueling head and soft target update
 
-- Sample efficiency with vs. without enhancements: TODO
-- Ablation (each technique separately): TODO
+W&B run: `task3-run2-dueling-soft`. Same settings as run 1, plus `--dueling --tau 0.001`.
 
-| Variant | Env steps to reach score 19 | Final score |
+**Implementation.**
+
+- **Dueling head.** The convolutional trunk is shared. After `Flatten`, the network splits into a value stream (3136 → 512 → 1) and an advantage stream (3136 → 512 → 6), combined as Q(s, a) = V(s) + A(s, a) − mean_a A(s, a) (slide 70, the identifiable form). This raises the parameter count from 1.69M to 3.29M. `test_model_task3.py` detects the dueling layout from the saved weights.
+- **Soft target update.** After every gradient step, w̄ ← τ·w + (1 − τ)·w̄ with τ = 0.001, instead of copying w into w̄ every 1,000 updates.
+
+**Result: worse than run 1 at every snapshot.**
+
+| Snapshot | Run 1, 20-seed average | Run 2, 20-seed average | Run 2 min / max | Run 2 games ≥ 19 |
+|---|---|---|---|---|
+| 600k | **13.05** | 7.30 | −1 / 16 | 0 |
+| 1M | **11.05** | 6.10 | −5 / 17 | 0 |
+| 1.5M | **13.50** | 9.80 | −4 / 18 | 0 |
+| 2M | **13.70** | 11.50 | −13 / 20 | 2 |
+| 2.5M | **13.55** | 12.05 | 3 / 19 | 1 |
+| best | **15.25** (≈ 2.36M) | 9.10 (≈ 1.43M, 16.6 on 5 games) | −6 / 17 | 0 |
+
+The training evaluations (5-game averages) agree:
+
+| Env steps | Run 1 | Run 2 |
 |---|---|---|
-| Vanilla DQN (Task 2) | ≈ 0.95M (first 3-game eval ≥ 19) | 19.10 (20 seeds, 3.09M snapshot) |
-| + Double DQN only | TODO | TODO |
-| + PER only | TODO | TODO |
-| + Multi-step only | TODO | TODO |
-| All three (Task 3, run 1) | not reached on 20 seeds within 2.5M | 15.25 (20 seeds, best snapshot) |
-| All three + dueling + soft target (run 2) | TODO | TODO |
+| 0 – 0.5M | −11.1 | −9.1 |
+| 0.5 – 1.0M | 11.1 | 7.6 |
+| 1.0 – 1.5M | 10.7 | 8.6 |
+| 1.5 – 2.0M | 13.5 | 12.0 |
+| 2.0 – 2.5M | 14.2 | 12.1 |
+
+Run 2 was slightly ahead during the first ≈ 0.4M steps, then fell behind once the agent started winning points, and never caught up.
+
+**Why it did not help (likely).**
+
+- **τ = 0.001 makes the target slower, not just smoother.** The target is an exponential average of past networks with a time constant of ≈ 1/τ = 1,000 updates, so it always lags behind the online network. A hard copy every 1,000 updates has the same average delay but catches up completely at each copy. With a slow target, the 3-step and PER updates spend longer fitting stale values.
+- **Twice the parameters, same data and learning rate.** The two 512-unit streams double the size of the network. With the same learning rate and number of updates, the larger head may simply need more steps.
+- **Single run.** As with run 1, each configuration was trained once, so part of the gap may be chance. But the gap is consistent across all six snapshots and the training curve.
+
+**Conclusion.** Adding the two DL-7 ideas on top did not fix the plateau of run 1; it lowered it further. Run 1 therefore remains the submitted Task 3 model. Both enhanced runs stay below vanilla DQN at the same budget, which suggests the problem comes from a component they share. The ablation study below tests each technique separately to find it.
+
+#### Ablation study: each technique on its own
+
+To find which part of run 1 caused the plateau, I trained three more agents, each with **only one** technique switched on. Everything else is identical to run 1 (lr 1e-4, batch 32, memory 100k, replay start 20k, ε decay 0.99998 → 0.02, hard target copy every 1,000 updates, MSE-type loss with gradient clip 10). Each run stopped at 1M env steps, and its 600k and 1M snapshots were evaluated on seeds 0–19 with `test_model_task3.py`.
+
+| W&B run | Double DQN | PER (α 0.6, β 0.4 → 1) | 3-step return |
+|---|---|---|---|
+| `task3-ablation-ddqn` | ✓ | – | – |
+| `task3-ablation-per` | – | ✓ | – |
+| `task3-ablation-nstep3` | – | – | ✓ |
+| `task3-full` (run 1) | ✓ | ✓ | ✓ |
+
+**Snapshot scores (20-seed average):**
+
+| Variant | 600k | 1M | 1M min / max | 1M games ≥ 19 |
+|---|---|---|---|---|
+| Vanilla DQN (Task 2, nearest checkpoints) | 13.80 (0.66M) | 17.60 (0.90M) / 16.35 (1.12M) | 12 / 21 (0.90M) | 7 (0.90M) |
+| Double DQN only | 2.30 | **16.55** | 12 / 21 | 3 |
+| PER only | 8.80 | 15.05 | 7 / 21 | 4 |
+| 3-step return only | 8.55 | 12.40 | 2 / 19 | 1 |
+| All three (run 1) | 13.05 | 11.05 | 3 / 17 | 0 |
+
+**Training curves (5-game evaluations, averaged per 100k steps):**
+
+| Env steps | DDQN only | PER only | 3-step only | All three (run 1) |
+|---|---|---|---|---|
+| 0.1M | −12.0 | −14.3 | −11.2 | −12.0 |
+| 0.2M | −11.8 | −10.1 | **−2.3** | −9.2 |
+| 0.3M | −7.9 | −2.7 | **7.1** | −3.5 |
+| 0.4M | −1.8 | 0.6 | **11.6** | 2.3 |
+| 0.5M | 3.6 | 7.5 | **10.2** | 8.4 |
+| 0.6M | 7.1 | 6.6 | **11.0** | 10.0 |
+| 0.7M | 12.1 | **12.4** | 9.4 | 9.4 |
+| 0.8M | 13.4 | 11.7 | 10.7 | **15.1** |
+| 0.9M | **15.6** | 14.3 | 12.1 | 12.4 |
+| 1.0M | **17.0** | 13.8 | 16.0 | 9.3 |
+
+None of the five enhanced runs had a 5-game evaluation of 19 or more within 1M steps (2.5M for runs 1 and 2).
+
+**Findings.**
+
+- **The 3-step return learns fastest early, then levels off lower.** With the reward propagated three steps per update, it reaches 11.6 at 0.4M while the other variants are still around 0. After that it stays around 10–12, and its 1M snapshot (12.40) is the weakest single technique. Run 1 has the same shape: an early lead from the 3-step return, then a plateau. So the multi-step return is the most likely cause of run 1's low ceiling.
+  - A plausible reason: the 3-step target sums rewards from actions stored in the replay buffer, which were chosen by an *older* policy. Without an off-policy correction, these targets are biased toward that older behavior. Early on this hardly matters and the faster propagation dominates. Once the policy is good, the bias holds it back.
+- **Double DQN starts slowly but ends strongest.** It is the slowest variant up to ≈ 0.5M, then climbs steadily to 16.55 at 1M, level with vanilla DQN. This fits its purpose: it corrects overestimated Q-values, which improves stability later in training rather than early speed.
+- **PER is in between.** It is close to Double DQN at 0.5–0.7M and ends at 15.05. On its own it does not cause a plateau.
+- **Combining them did not add up.** All three together kept the 3-step return's early speed (best of all variants at 0.6M, 13.05) but also its ceiling, and ended below every single technique at 1M (11.05). PER may make this worse, since it replays the transitions with the largest (and here, most biased) n-step errors more often.
+
+**Limitations.**
+
+- Each variant was trained **once**, and single snapshots are noisy. For example, the Double DQN 600k snapshot scored 2.30 on 20 seeds while its training evaluations around 0.6M averaged 7.1. Conclusions are about clear trends, not small gaps.
+- The vanilla baseline is the Task 2 run, which used a replay start of 50k and a slower ε decay (0.999988). A "no enhancement" run with exactly the ablation settings would be a cleaner baseline.
+- The ablation stops at 1M steps, so it says nothing about which variant would reach 19 first after that.
+
+#### Sample efficiency with and without the enhancements
+
+| Variant | Env steps to reach score 19 | Best 20-seed score within budget |
+|---|---|---|
+| Vanilla DQN (Task 2) | ≈ 0.95M (first 3-game eval ≥ 19); 3.09M on 20 seeds | 19.10 (3.09M snapshot) |
+| Double DQN only | not reached within 1M | 16.55 (1M) |
+| PER only | not reached within 1M | 15.05 (1M) |
+| 3-step return only | not reached within 1M | 12.40 (1M) |
+| All three (Task 3, run 1) | not reached on 20 seeds within 2.5M | 15.25 (best snapshot, ≈ 2.36M) |
+| All three + dueling + soft target (run 2) | not reached on 20 seeds within 2.5M | 12.05 (2.5M) |
+
+In this setup the enhancements **did not improve sample efficiency** over vanilla DQN past the first ≈ 0.6M steps. The 3-step return gave a clear early speed-up (score ≈ 11 by 0.4M steps versus ≈ 0 for the others), but every enhanced variant ended at or below vanilla DQN at 1M steps. The ablation points to the uncorrected multi-step return as the component that limits the final score, and to Double DQN as the one that helps most later in training.
 
 ---
 
