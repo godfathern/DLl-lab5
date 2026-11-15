@@ -150,31 +150,150 @@ All Conv and Linear layers use Kaiming-uniform initialization (suited to ReLU) w
 - **Evaluation during training.** Every 20 games, 3 greedy games (ε = 0) are played on a separate environment and their average is logged as `Eval Reward`. A checkpoint is also saved every 100 games.
 - **Device.** Training ran on an Apple-silicon GPU (PyTorch `mps` backend). The code picks `cuda`, then `mps`, then `cpu`.
 
-### 2.3 Double DQN (Task 3) — TODO
+### 2.3 Double DQN (Task 3)
 
-**Concept.** The max in the DQN target uses the same network to select and evaluate the next action, which overestimates Q-values. Double DQN selects with the online network and evaluates with the target network (handout eq. 2):
+**Concept.** The DQN target takes max_a′ Q(s′, a′; θ̄): the same network both **selects** the best next action and **evaluates** it. Because the Q-values are noisy estimates, the max tends to pick an action whose value happens to be overestimated, so the target is biased upward (DL-7, slides 34–36: overestimation bias and double estimators). Double DQN decouples the two steps (handout eq. 2, DL-7 slide 67): the **online** network θ selects the next action, and the **target** network θ̄ evaluates it.
 
 $$
 y = r + \gamma\, Q\big(s', \arg\max_{a'} Q(s',a';\theta);\ \bar\theta\big)
 $$
 
-**Implementation:** **TODO** (code snippet)
+The two networks have different errors, so an action that one overestimates is usually not overestimated by the other. No extra network is needed: DQN already has the target network.
 
-### 2.4 Prioritized Experience Replay (Task 3) — TODO
+**Implementation.** Only the computation of the next-state value in `train()` changes (flag `--double-dqn`):
 
-**Concept.** Transition *i* gets priority p_i = |δ_i| + ε and is sampled with probability P(i) = p_i^α / Σ_k p_k^α. Importance-sampling weights w_i = (N · P(i))^(−β), normalized by their maximum, correct the bias.
+```python
+with torch.no_grad():
+    if self.double_dqn:
+        # online net selects a', target net evaluates it
+        next_actions = self.q_net(next_states).argmax(dim=1, keepdim=True)
+        next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
+    else:
+        next_q_values = self.target_net(next_states).max(dim=1).values
+    targets = rewards + discounts * next_q_values * (1 - dones)
+```
 
-**Implementation:** **TODO** (data structure, how priorities are updated, β schedule)
+`argmax(dim=1, keepdim=True)` gives one action index per sample (shape `[B, 1]`), and `gather` reads the target network's Q-value for exactly that action. Everything else (loss, target-network sync, replay) is unchanged. The `discounts` tensor is γ for 1-step transitions and γⁿ for multi-step ones (Section 2.5).
 
-### 2.5 Multi-step return (Task 3) — TODO
+### 2.4 Prioritized Experience Replay (Task 3)
 
-**Concept.** Replace the 1-step target with the n-step return:
+**Concept.** Uniform replay spends most updates on transitions the network already predicts well. PER samples transitions with a large Bellman error more often (handout, DL-7 slide 68, Schaul et al. 2016):
+
+- **Priority:** p_i = |δ_i| + ε, where δ_i is the TD error of transition *i*. The small ε = 1e-6 keeps every transition sampleable.
+- **Sampling probability:** P(i) = p_i^α / Σ_k p_k^α. α = 0 is uniform sampling; α = 1 is fully proportional. I use α = 0.6.
+- **Importance-sampling (IS) weights:** prioritized sampling changes the data distribution the loss is averaged over, which biases the gradient. Each sample's loss is multiplied by w_i = (N · P(i))^(−β), normalized by the largest weight in the batch so that weights only scale updates down. β is annealed linearly from 0.4 to 1 over the first 1M env steps, so the correction becomes exact late in training, when unbiased updates matter most.
+
+**Data structure.** `PrioritizedReplayBuffer` is a ring buffer of fixed capacity (100k) with a parallel NumPy array of priorities:
+
+- `self.buffer`: a Python list of transitions. When full, the oldest slot (`self.pos`) is overwritten (FIFO).
+- `self.priorities`: a float32 array of length `capacity`, storing **p_i^α** (already exponentiated), so sampling only needs a sum.
+- `self.max_priority`: the largest raw priority seen so far.
+
+**Adding a transition.** A new transition has no TD error yet, so it gets the current maximum priority. This guarantees every transition is replayed at least once soon after it is collected.
+
+```python
+def add(self, transition, error=None):
+    priority = self.max_priority if error is None else abs(error) + self.eps
+    if len(self.buffer) < self.capacity:
+        self.buffer.append(transition)
+    else:
+        self.buffer[self.pos] = transition          # overwrite the oldest
+    self.priorities[self.pos] = priority ** self.alpha
+    self.pos = (self.pos + 1) % self.capacity
+```
+
+**Sampling.** I use stratified proportional sampling: the total priority mass is split into `batch_size` equal segments, one point is drawn uniformly in each segment, and the transition whose cumulative-priority interval contains that point is selected (`np.searchsorted` on the cumulative sum). Stratification spreads the batch over the whole distribution instead of drawing the same high-priority transitions repeatedly.
+
+```python
+def sample(self, batch_size):
+    n = len(self.buffer)
+    scaled = self.priorities[:n].astype(np.float64)       # p_i^alpha
+    cumsum = np.cumsum(scaled)
+    total = cumsum[-1]
+    targets = (np.arange(batch_size) + np.random.rand(batch_size)) * (total / batch_size)
+    indices = np.minimum(np.searchsorted(cumsum, targets, side="right"), n - 1)
+
+    probs = scaled[indices] / total                        # P(i)
+    weights = (n * probs) ** (-self.beta)                  # IS weights
+    weights /= weights.max()
+    return [self.buffer[i] for i in indices], indices, weights.astype(np.float32)
+```
+
+A sum tree would make sampling O(log N) instead of O(N). With N = 100k, a NumPy cumulative sum takes well under a millisecond, which is small next to the CNN forward/backward pass, so I kept the simpler array version.
+
+**Updating priorities.** After each gradient step, the sampled transitions get new priorities from their current TD errors:
+
+```python
+def update_priorities(self, indices, errors):
+    priorities = np.abs(errors) + self.eps
+    self.priorities[indices] = priorities ** self.alpha
+    self.max_priority = max(self.max_priority, float(priorities.max()))
+```
+
+**Use in `train()`** (flag `--per`). β is annealed, the batch is sampled with its indices and weights, the squared TD error is weighted by the IS weights, and priorities are refreshed:
+
+```python
+progress = min(1.0, self.env_count / self.per_beta_steps)
+self.memory.beta = self.per_beta_start + (1.0 - self.per_beta_start) * progress
+batch, indices, weights = self.memory.sample(self.batch_size)
+...
+td_errors = targets - q_values
+weights = torch.from_numpy(weights).to(self.device)
+loss = (weights * td_errors.pow(2)).mean()
+self.memory.update_priorities(indices, td_errors.detach().abs().cpu().numpy())
+```
+
+Transitions enter the buffer through `push_memory()`, which calls `memory.add()` with PER and `deque.append()` without it. Prioritization happens only when sampling.
+
+### 2.5 Multi-step return (Task 3)
+
+**Concept.** The 1-step target uses one real reward and then bootstraps from the network's estimate. In Pong almost every reward is 0, so information about a point travels back only one step per update. The n-step return uses n real rewards before bootstrapping (handout, DL-7 slide 69):
 
 $$
 R_t^{(n)} = \sum_{k=0}^{n-1}\gamma^k r_{t+k} + \gamma^n \max_{a'} Q(s_{t+n},a')
 $$
 
-**Implementation:** **TODO** (n, how the n-step buffer handles episode ends)
+With n = 3, each update propagates reward three steps back. The trade-off: the rewards r_{t+1}, r_{t+2} come from actions chosen by the policy that collected the data (possibly an older one, since the data is replayed), and DQN applies no off-policy correction for them. The return is therefore slightly biased toward that older behavior. Section 4.3 shows this trade-off in the ablation.
+
+**Implementation** (flag `--n-step`, default 1). Instead of pushing each raw transition into replay, the agent keeps the last n raw transitions of the current episode in `self.n_step_buffer = deque(maxlen=n_step)`. Each stored transition gets a sixth field, the discount γ^k to apply to the bootstrap term, where k is the number of rewards actually summed:
+
+```python
+def n_step_transition(self):
+    # (s_t, a_t, R = sum_k gamma^k r_{t+k}, s_{t+k}, terminated, gamma^k), k = len(buffer)
+    ret = sum((self.gamma ** k) * t[2] for k, t in enumerate(self.n_step_buffer))
+    state, action = self.n_step_buffer[0][0], self.n_step_buffer[0][1]
+    next_state, terminated = self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
+    return (state, action, ret, next_state, terminated, self.gamma ** len(self.n_step_buffer))
+```
+
+```python
+def store_transition(self, state, action, reward, next_state, terminated, episode_end):
+    self.n_step_buffer.append((state, action, reward, next_state, terminated))
+    if len(self.n_step_buffer) == self.n_step:
+        self.push_memory(self.n_step_transition())
+    if episode_end:
+        # the last n-1 starting points never collect n rewards: store shorter returns
+        if len(self.n_step_buffer) == self.n_step:
+            self.n_step_buffer.popleft()          # already stored above
+        while self.n_step_buffer:
+            self.push_memory(self.n_step_transition())
+            self.n_step_buffer.popleft()
+```
+
+The target in `train()` then uses the stored discount instead of a fixed γ:
+
+```python
+targets = rewards + discounts * next_q_values * (1 - dones)
+```
+
+**Episode ends.**
+
+- Every time the window is full, one n-step transition is stored, starting at the oldest raw transition. The `deque(maxlen=n)` then drops that oldest one when the next step arrives.
+- When the episode ends, the last n − 1 starting points have fewer than n future rewards. They are flushed with shorter returns (k = 2, then 1) and the matching discounts γ², γ, so no transition is lost and none spans two episodes.
+- `terminated` is taken from the **last** raw transition in the window. A true terminal state cuts the bootstrap term with `(1 - dones)`. A time-limit truncation is not terminal, so its shorter return still bootstraps from the last next state with γ^k (same terminated/truncated rule as Section 2.1).
+- With n = 1 this code stores exactly (s, a, r, s′, terminated, γ), so Tasks 1 and 2 are unchanged.
+
+Multi-step and Double DQN combine naturally: the bootstrap state s_{t+n} is evaluated with the Double DQN rule of Section 2.3. Multi-step and PER also combine directly: an n-step transition is just one entry in the prioritized buffer, and its priority is the TD error of its n-step target.
 
 ### 2.6 Weights & Biases tracking
 
