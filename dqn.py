@@ -12,6 +12,7 @@ import gymnasium as gym
 import cv2
 import ale_py
 import os
+import copy
 from collections import deque
 import wandb
 import argparse
@@ -239,7 +240,19 @@ class DQNAgent:
         # Snapshots at fixed environment steps (Task 3 grading) and an optional step budget
         self.snapshot_steps = {int(s) for s in args.snapshot_steps.split(",") if s.strip()}
         self.max_env_steps = args.max_env_steps
+        self.checkpoint_steps = args.checkpoint_steps
         os.makedirs(self.save_dir, exist_ok=True)
+
+        # Weight averaging (Polyak averaging of q_net, same formula as the soft update on slide 55 / DL-7).
+        # The averaged copies are used ONLY for evaluation and snapshots: targets, action selection and
+        # gradient updates still use q_net / target_net, so training itself is unchanged.
+        # One copy per horizon H (in env steps): w_avg <- (1 - tau) * w_avg + tau * w, tau = avg_every / H.
+        self.avg_horizons = [int(h) for h in args.avg_horizons.split(",") if h.strip()]
+        self.avg_every = 10                        # update the averages every 10 env steps
+        self.avg_nets = {h: copy.deepcopy(self.q_net) for h in self.avg_horizons}
+        self.avg_updates = 0
+        self.avg_eval_horizon = args.avg_eval_horizon or (self.avg_horizons[0] if self.avg_horizons else 0)
+        self.best_avg_reward = -21 if self.atari else 0
 
     def push_memory(self, transition):
         if self.use_per:
@@ -287,7 +300,19 @@ class DQNAgent:
     def save_snapshot(self):
         path = os.path.join(self.save_dir, f"snapshot_{self.env_count}.pt")
         torch.save(self.q_net.state_dict(), path)
+        for h, net in self.avg_nets.items():
+            torch.save(net.state_dict(), os.path.join(self.save_dir, f"snapshot_{self.env_count}_avg{h}.pt"))
         print(f"Saved snapshot at {self.env_count} env steps to {path}")
+
+    def update_weight_averages(self):
+        # Until an average has seen H / avg_every samples, use a plain running mean (tau = 1/k),
+        # so the random initial weights do not linger in the long-horizon averages
+        self.avg_updates += 1
+        with torch.no_grad():
+            for h, net in self.avg_nets.items():
+                tau = max(self.avg_every / h, 1.0 / self.avg_updates)
+                for w_avg, w in zip(net.parameters(), self.q_net.parameters()):
+                    w_avg.mul_(1 - tau).add_(w, alpha=tau)
 
     def run(self, episodes=1000):
         budget_reached = False
@@ -313,6 +338,8 @@ class DQNAgent:
                 if self.env_count % self.train_freq == 0:
                     for _ in range(self.train_per_step):
                         self.train()
+                if self.avg_nets and self.train_count > 0 and self.env_count % self.avg_every == 0:
+                    self.update_weight_averages()
 
                 state = next_state
                 total_reward += reward
@@ -321,6 +348,8 @@ class DQNAgent:
 
                 if self.env_count in self.snapshot_steps:
                     self.save_snapshot()
+                if self.checkpoint_steps and self.env_count % self.checkpoint_steps == 0:
+                    torch.save(self.q_net.state_dict(), os.path.join(self.save_dir, f"ckpt_{self.env_count}.pt"))
                 if self.max_env_steps and self.env_count >= self.max_env_steps:
                     budget_reached = True
 
@@ -368,13 +397,22 @@ class DQNAgent:
                     "Update Count": self.train_count,
                     "Eval Reward": eval_reward
                 })
+                if self.avg_nets and self.avg_updates > 0:
+                    # Same greedy evaluation, but with the weight-averaged network
+                    avg_reward = self.evaluate(self.avg_nets[self.avg_eval_horizon])
+                    if avg_reward > self.best_avg_reward:
+                        self.best_avg_reward = avg_reward
+                        torch.save(self.avg_nets[self.avg_eval_horizon].state_dict(), os.path.join(self.save_dir, "best_model_avg.pt"))
+                    print(f"[AvgEval] Ep: {ep} Eval Reward: {avg_reward:.2f} SC: {self.env_count} UC: {self.train_count}")
+                    wandb.log({"Env Step Count": self.env_count, "Eval Reward (averaged weights)": avg_reward})
 
             if budget_reached:
                 print(f"Reached the budget of {self.max_env_steps} env steps, stopping.")
                 break
 
-    def evaluate(self):
+    def evaluate(self, net=None):
         # Average over several greedy episodes so "best model" isn't picked from one lucky run
+        net = self.q_net if net is None else net
         episode_rewards = []
         for _ in range(self.eval_episodes):
             obs, _ = self.test_env.reset()
@@ -385,7 +423,7 @@ class DQNAgent:
             while not done:
                 state_tensor = torch.from_numpy(np.array(state)).float().unsqueeze(0).to(self.device)
                 with torch.no_grad():
-                    action = self.q_net(state_tensor).argmax().item()
+                    action = net(state_tensor).argmax().item()
                 next_obs, reward, terminated, truncated, _ = self.test_env.step(action)
                 done = terminated or truncated
                 total_reward += reward
@@ -509,6 +547,9 @@ if __name__ == "__main__":
     parser.add_argument("--n-step", type=int, default=1, help="Multi-step return length (1 = vanilla)")
     parser.add_argument("--dueling", action="store_true", help="Dueling network head: Q = V + A - mean(A)")
     parser.add_argument("--tau", type=float, default=0.0, help="Soft target update rate (0 = hard update every --target-update-frequency)")
+    parser.add_argument("--avg-horizons", type=str, default="", help='Weight-averaging horizons in env steps, e.g. "30000,100000,300000" (empty = off)')
+    parser.add_argument("--avg-eval-horizon", type=int, default=0, help="Which averaged network to evaluate during training (0 = first horizon)")
+    parser.add_argument("--checkpoint-steps", type=int, default=0, help="Also save ckpt_<step>.pt every N env steps (0 = off)")
     parser.add_argument("--snapshot-steps", type=str, default="", help='e.g. "600000,1000000,1500000,2000000,2500000"')
     parser.add_argument("--max-env-steps", type=int, default=0, help="Stop after this many env steps (0 = no limit)")
     args = parser.parse_args()
