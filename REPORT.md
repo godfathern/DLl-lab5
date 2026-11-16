@@ -872,6 +872,21 @@ The likely reason is the off-policy bias of the uncorrected n-step return (Secti
 
 All commands are run from the root of the extracted ZIP (scripts in `LAB5_115550809_Code/`, snapshots in the root). Training commands write their outputs to `./results/`.
 
+**Submitted snapshots and where each one comes from.** Each file in the ZIP root is a byte-identical copy of the training output listed here, produced by the training commands below:
+
+| Submitted file | Copied from | Env steps | Seeds 0–19 |
+|---|---|---|---|
+| `LAB5_115550809_task1.pt` | `results/task1/best_model.pt` (Task 1 training) | ≈ 95.7k | 500.00 |
+| `LAB5_115550809_task2.pt` | `results/task2/model_ep1400.pt` (Task 2 training, checkpoint after game 1400) | 3,092,538 | 19.10 |
+| `LAB5_115550809_task3_600000.pt` | `results/task3_run3c-n2-rr2/snapshot_600000_avg100000.pt` (run 3C) | 600,000 | 15.45 |
+| `LAB5_115550809_task3_1000000.pt` | `results/task3_run3c-n2-rr2/snapshot_1000000_avg300000.pt` (run 3C) | 1,000,000 | 17.40 |
+| `LAB5_115550809_task3_1500000.pt` | `results/task3_run3c-n2-rr2/snapshot_1500000_avg300000.pt` (run 3C) | 1,500,000 | 17.50 |
+| `LAB5_115550809_task3_2000000.pt` | output of `average_checkpoints.py` on run 3C, window 1.275M–2M (command below) | 2,000,000 | 18.00 |
+| `LAB5_115550809_task3_2500000.pt` | output of `average_checkpoints.py` on run 3C, window 1.525M–2.5M (command below) | 2,500,000 | 17.90 |
+| `LAB5_115550809_task3_best.pt` | `results/task3_run4b-finetune/snapshot_3500000.pt` (run 4B) | 3,500,000 | 19.25 |
+
+`snapshot_<N>.pt` is the raw network at step *N*; `snapshot_<N>_avg<H>.pt` is the online weight average with horizon *H* saved at the same step (Section 4.3).
+
 ```bash
 pip install -r LAB5_115550809_Code/requirements.txt
 wandb login
