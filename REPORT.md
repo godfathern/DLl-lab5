@@ -316,12 +316,14 @@ All plots use `Env Step Count` as the x-axis, as required. W&B's default x-axis 
 
 ## 3. Evaluation Results (Snapshots)
 
+**All commands in this report are run from the root of the extracted `LAB5_115550809.zip`.** The scripts are in `LAB5_115550809_Code/` and the `.pt` snapshots are in the ZIP root, as required by the submission format. `bash LAB5_115550809_Code/eval_all.sh` runs all eight evaluations at once.
+
 ### 3.1 Task 1 — CartPole-v1
 
 **Command**
 
 ```bash
-python test_model_task1.py --model_path LAB5_115550809_task1.pt
+python LAB5_115550809_Code/test_model_task1.py --model_path LAB5_115550809_task1.pt
 ```
 
 `test_model_task1.py` loads the snapshot, runs 20 greedy episodes with seeds 0–19 and prints the average reward.
@@ -344,7 +346,7 @@ Results ranged from runs that never learned (best eval 14) to runs that hit 500 
 **Command**
 
 ```bash
-python test_model.py --model_path LAB5_115550809_task2.pt --env-steps 3092538
+python LAB5_115550809_Code/test_model.py --model_path LAB5_115550809_task2.pt --env-steps 3092538
 ```
 
 `test_model.py` builds the same CNN and preprocessing as training, plays 20 greedy games with seeds 0–19 (`env.reset(seed=seed + ep)`), and prints each score and the average. `--env-steps` is only printed, to label the snapshot. Adding `--save-video` also writes one mp4 per game to `./eval_videos/` (used for the demo video).
@@ -371,7 +373,7 @@ The milestone snapshots come from run 3C (Double DQN + PER + 2-step return, two 
 Every file is a plain `state_dict` of the same CNN, so all of them are evaluated the same way:
 
 ```bash
-python test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
 ```
 
 (Same for each file, with its own step count. `--model-path` also works, in all three evaluation scripts. Seeds 0–19.)
@@ -868,8 +870,10 @@ The likely reason is the off-policy bias of the uncorrected n-step return (Secti
 
 ## Appendix: How to Reproduce
 
+All commands are run from the root of the extracted ZIP (scripts in `LAB5_115550809_Code/`, snapshots in the root). Training commands write their outputs to `./results/`.
+
 ```bash
-pip install -r requirements.txt
+pip install -r LAB5_115550809_Code/requirements.txt
 wandb login
 ```
 
@@ -882,7 +886,7 @@ bash LAB5_115550809_Code/eval_all.sh
 **Task 1 training**
 
 ```bash
-python dqn.py --wandb-run-name task1-final --lr 5e-4 --target-update-frequency 500 \
+python LAB5_115550809_Code/dqn.py --wandb-run-name task1-final --lr 5e-4 --target-update-frequency 500 \
   --batch-size 64 --replay-start-size 1000 --epsilon-decay 0.9995 \
   --memory-size 50000 --episodes 800 --eval-episodes 5 --save-dir ./results/task1
 ```
@@ -890,13 +894,13 @@ python dqn.py --wandb-run-name task1-final --lr 5e-4 --target-update-frequency 5
 **Task 1 evaluation**
 
 ```bash
-python test_model_task1.py --model_path LAB5_115550809_task1.pt
+python LAB5_115550809_Code/test_model_task1.py --model_path LAB5_115550809_task1.pt
 ```
 
 **Task 2 training**
 
 ```bash
-python dqn.py --env ALE/Pong-v5 --wandb-run-name task2-vanilla --save-dir ./results/task2 \
+python LAB5_115550809_Code/dqn.py --env ALE/Pong-v5 --wandb-run-name task2-vanilla --save-dir ./results/task2 \
   --lr 1e-4 --batch-size 32 --memory-size 100000 --replay-start-size 50000 \
   --epsilon-decay 0.999988 --epsilon-min 0.02 --target-update-frequency 1000 \
   --episodes 3000 --eval-episodes 3
@@ -907,14 +911,14 @@ python dqn.py --env ALE/Pong-v5 --wandb-run-name task2-vanilla --save-dir ./resu
 **Task 2 evaluation and demo video**
 
 ```bash
-python test_model.py --model_path LAB5_115550809_task2.pt --env-steps 3092538
-python test_model.py --model_path LAB5_115550809_task2.pt --episodes 3 --save-video --output-dir ./eval_videos
+python LAB5_115550809_Code/test_model.py --model_path LAB5_115550809_task2.pt --env-steps 3092538
+python LAB5_115550809_Code/test_model.py --model_path LAB5_115550809_task2.pt --episodes 3 --save-video --output-dir ./eval_videos
 ```
 
 **Task 3 training, run 3C (0 → 2.5M steps; produces the 600k–2.5M snapshots)**
 
 ```bash
-python dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run3c-n2-rr2 --save-dir ./results/task3_run3c-n2-rr2 \
+python LAB5_115550809_Code/dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run3c-n2-rr2 --save-dir ./results/task3_run3c-n2-rr2 \
   --double-dqn --per --per-alpha 0.6 --per-beta-start 0.4 --per-beta-steps 1000000 --n-step 2 \
   --train-per-step 2 --lr 1e-4 --batch-size 32 --memory-size 100000 --replay-start-size 20000 \
   --epsilon-decay 0.99998 --epsilon-min 0.02 --target-update-frequency 1000 \
@@ -928,15 +932,15 @@ At each snapshot step this saves `snapshot_<N>.pt` (raw network) and `snapshot_<
 **Checkpoint averages (the 2M and 2.5M snapshots)**
 
 ```bash
-python average_checkpoints.py ./results/task3_run3c-n2-rr2 2000000 750000 LAB5_115550809_task3_2000000.pt
-python average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 LAB5_115550809_task3_2500000.pt
+python LAB5_115550809_Code/average_checkpoints.py ./results/task3_run3c-n2-rr2 2000000 750000 LAB5_115550809_task3_2000000.pt
+python LAB5_115550809_Code/average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 LAB5_115550809_task3_2500000.pt
 ```
 
 **Task 3 training, run 4B (2.5M → 3.5M steps; produces the best snapshot)**
 
 ```bash
-python average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 ./results/swa_2500000_w1000000.pt
-python dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run4b-finetune --save-dir ./results/task3_run4b-finetune \
+python LAB5_115550809_Code/average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 ./results/swa_2500000_w1000000.pt
+python LAB5_115550809_Code/dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run4b-finetune --save-dir ./results/task3_run4b-finetune \
   --load-model ./results/swa_2500000_w1000000.pt --start-env-steps 2500000 \
   --double-dqn --per --per-alpha 0.6 --per-beta-start 0.4 --per-beta-steps 1000000 --n-step 1 \
   --train-per-step 1 --lr 5e-5 --batch-size 32 --memory-size 100000 --replay-start-size 20000 \
@@ -951,10 +955,10 @@ python dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run4b-finetune --save-dir
 **Task 3 evaluation (seeds 0–19)**
 
 ```bash
-python test_model_task3.py --model_path LAB5_115550809_task3_600000.pt --env-steps 600000
-python test_model_task3.py --model_path LAB5_115550809_task3_1000000.pt --env-steps 1000000
-python test_model_task3.py --model_path LAB5_115550809_task3_1500000.pt --env-steps 1500000
-python test_model_task3.py --model_path LAB5_115550809_task3_2000000.pt --env-steps 2000000
-python test_model_task3.py --model_path LAB5_115550809_task3_2500000.pt --env-steps 2500000
-python test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_600000.pt --env-steps 600000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_1000000.pt --env-steps 1000000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_1500000.pt --env-steps 1500000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_2000000.pt --env-steps 2000000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_2500000.pt --env-steps 2500000
+python LAB5_115550809_Code/test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
 ```
