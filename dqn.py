@@ -202,6 +202,9 @@ class DQNAgent:
 
         self.q_net = DQN(self.num_actions, atari=self.atari, dueling=args.dueling).to(self.device)
         self.q_net.apply(init_weights)
+        if args.load_model:
+            # Continue training from saved weights (the replay buffer starts empty again)
+            self.q_net.load_state_dict(torch.load(args.load_model, map_location=self.device))
         self.target_net = DQN(self.num_actions, atari=self.atari, dueling=args.dueling).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=args.lr)
@@ -212,7 +215,7 @@ class DQNAgent:
         self.epsilon_decay = args.epsilon_decay
         self.epsilon_min = args.epsilon_min
 
-        self.env_count = 0
+        self.env_count = args.start_env_steps   # > 0 only when continuing a run (--load-model)
         self.train_count = 0
         self.best_reward = -21 if self.atari else 0  # Initilized to 0 for CartPole and to -21 for Pong
         self.max_episode_steps = args.max_episode_steps
@@ -552,6 +555,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-steps", type=int, default=0, help="Also save ckpt_<step>.pt every N env steps (0 = off)")
     parser.add_argument("--snapshot-steps", type=str, default="", help='e.g. "600000,1000000,1500000,2000000,2500000"')
     parser.add_argument("--max-env-steps", type=int, default=0, help="Stop after this many env steps (0 = no limit)")
+    parser.add_argument("--load-model", type=str, default="", help="Initialize q_net (and target_net) from these weights")
+    parser.add_argument("--start-env-steps", type=int, default=0, help="Env steps already trained by --load-model (counter starts here)")
     args = parser.parse_args()
 
     project = args.wandb_project or ("DLP-Lab5-DQN-Pong" if args.env.startswith("ALE/") else "DLP-Lab5-DQN-CartPole")
