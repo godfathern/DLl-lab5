@@ -872,7 +872,7 @@ The likely reason is the off-policy bias of the uncorrected n-step return (Secti
 
 All commands are run from the root of the extracted ZIP (scripts in `LAB5_115550809_Code/`, snapshots in the root). Training commands write their outputs to `./results/`.
 
-**Submitted snapshots and where each one comes from.** Each file in the ZIP root is a byte-identical copy of the training output listed here, produced by the training commands below:
+**Submitted snapshots and where each one comes from.** Each file in the ZIP root holds exactly the weights of the training output listed here, produced by the training commands below. The files copied from `results/` are byte-identical copies. Rebuilding the 2M and 2.5M files with the `average_checkpoints.py` commands gives identical tensors; only the archive's internal folder name, which `torch.save` takes from the output file name, differs.
 
 | Submitted file | Copied from | Env steps | Seeds 0–19 |
 |---|---|---|---|
