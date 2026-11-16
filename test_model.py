@@ -115,7 +115,7 @@ def evaluate(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, required=True, help="Path to trained .pt model")
+    parser.add_argument("--model-path", "--model_path", dest="model_path", type=str, required=True, help="Path to trained .pt model")
     parser.add_argument("--output-dir", type=str, default="./eval_videos")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0, help="First evaluation seed (episodes use seed, seed+1, ...)")
