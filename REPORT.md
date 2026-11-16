@@ -3,9 +3,6 @@
 **Course:** 535528 Deep Learning, Fall 2026
 **Student:** Phan Tung Bui — Student ID: `115550809`
 
-> Sections marked **TODO** are still to be filled in (Task 3 has not been trained yet).
-> Replace every `screenshots/...png` placeholder with your own image (create a `screenshots/` folder next to this file, or change the paths).
-
 ---
 
 ## 1. Introduction
@@ -25,9 +22,11 @@ This lab implements Deep Q-Networks (DQN) and evaluates them on two environments
 - **Time-limit truncation must not be treated as termination.** CartPole cuts episodes off at 500 steps; storing that as a terminal transition is a known source of biased targets, so only real terminations zero out the bootstrap term (Section 2.1).
 - **Task 2:** Vanilla DQN with the Nature-DQN CNN learns Pong from pixels. The 3-game evaluation average first reached 19 at ≈ 0.95M environment steps. The submitted snapshot (≈ 3.09M steps) averages **19.10 over seeds 0–19**.
 - **Model selection needs a reliable evaluation.** On Pong, the "best" model chosen during training from a 3-game average scored only 17.40 on the 20-seed test, while an earlier checkpoint scored 19.10 (Section 4.2).
-- **TODO:** Task 3 findings.
+- **Task 3:** Double DQN, PER and a multi-step return make early learning much faster. The best configuration (2-step return, two updates per environment step) reaches scores of 10, 15 and 17 with ≈ 1.6× fewer environment steps than vanilla DQN, and its 600k snapshot beats vanilla's (15.45 vs 13.80). It then levels off at ≈ 17–18. Continuing it with a 1-step return, one update per step and a lower learning rate reached **19.25 on seeds 0–19 at 3.5M environment steps**.
+- **The uncorrected multi-step return limits the final score.** The ablation study shows the 3-step return is the fastest technique early on but has the lowest ceiling. Shorter returns (n = 2, then n = 1) raised the ceiling step by step (Section 4.3).
+- **Single snapshots are noisy; averaging weights helps.** With two updates per step, the raw network's 20-seed score swung by several points between snapshots. Averaging its weights over time added 4–5 points at 1M steps, without changing training.
 
-**Organization.** Section 2 describes the implementation (Bellman error, Double DQN, PER, multi-step return, W&B logging). Section 3 lists the evaluation commands and screenshots. Section 4 shows training curves and analysis. Section 5 covers additional experiments (bonus), including the CartPole hyperparameter study.
+**Organization.** Section 2 describes the implementation (Bellman error, Double DQN, PER, multi-step return, W&B logging). Section 3 lists the evaluation commands and screenshots. Section 4 shows training curves and analysis. Section 5 covers additional experiments (bonus): the CartPole hyperparameter study and other training strategies on Pong (weight averaging, replay ratio, multi-step length, a fine-tuning phase, dueling and soft target updates).
 
 ---
 
@@ -352,22 +351,30 @@ python test_model.py --model-path LAB5_115550809_task2.pt --env-steps 3092538
 
 ![Task 2 evaluation output (seeds 0–19)](screenshots/task2_eval.png)
 
-### 3.3 Task 3 — Enhanced DQN on Pong-v5 — TODO
+### 3.3 Task 3 — Enhanced DQN on Pong-v5
 
-> **Provisional:** these are the run 1 snapshots (Double DQN + PER + 3-step, Section 4.3). Run 2 (Section 4.3) scored lower at every snapshot, so run 1 is kept unless a later run does better.
+The milestone snapshots come from run 3C (Double DQN + PER + 2-step return, two updates per environment step). The best snapshot comes from run 4B, which continued run 3C past 2.5M steps with a 1-step return, one update per step and a lower learning rate (Section 4.3).
 
-| Snapshot | Env steps | Average score (20 episodes) | Screenshot |
-|---|---|---|---|
-| `LAB5_115550809_task3_600000.pt` | 600k | 13.05 | ![](screenshots/task3_600k.png) |
-| `LAB5_115550809_task3_1000000.pt` | 1M | 11.05 | ![](screenshots/task3_1M.png) |
-| `LAB5_115550809_task3_1500000.pt` | 1.5M | 13.50 | ![](screenshots/task3_1.5M.png) |
-| `LAB5_115550809_task3_2000000.pt` | 2M | 13.70 | ![](screenshots/task3_2M.png) |
-| `LAB5_115550809_task3_2500000.pt` | 2.5M | 13.55 | ![](screenshots/task3_2.5M.png) |
-| `LAB5_115550809_task3_best.pt` | ≈ 2.36M | 15.25 | ![](screenshots/task3_best.png) |
+| Snapshot | Env steps | Network | Average score (seeds 0–19) | Screenshot |
+|---|---|---|---|---|
+| `LAB5_115550809_task3_600000.pt` | 600k | run 3C, online weight average (100k) | 15.45 | ![](screenshots/task3_600k.png) |
+| `LAB5_115550809_task3_1000000.pt` | 1M | run 3C, online weight average (300k) | 17.40 | ![](screenshots/task3_1M.png) |
+| `LAB5_115550809_task3_1500000.pt` | 1.5M | run 3C, online weight average (300k) | 17.50 | ![](screenshots/task3_1.5M.png) |
+| `LAB5_115550809_task3_2000000.pt` | 2M | run 3C, checkpoint average (1.275M–2M) | 18.00 | ![](screenshots/task3_2M.png) |
+| `LAB5_115550809_task3_2500000.pt` | 2.5M | run 3C, checkpoint average (1.525M–2.5M) | 17.90 | ![](screenshots/task3_2.5M.png) |
+| `LAB5_115550809_task3_best.pt` | **3.5M** | run 4B, raw network | **19.25** | ![](screenshots/task3_best.png) |
 
-Command: `python test_model_task3.py --model-path LAB5_115550809_task3_600000.pt` (same for each file; seeds 0–19).
+Every file is a plain `state_dict` of the same CNN, so all of them are evaluated the same way:
 
-**First time reaching score 19:** not reached by any run 1 snapshot within 2.5M steps (best: 15.25 on seeds 0–19).
+```bash
+python test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
+```
+
+(Same for each file, with its own step count. `--model-path` also works. Seeds 0–19.)
+
+The averaged snapshots only use weights trained during the first *N* environment steps of their snapshot, so each one is a valid snapshot for step *N* (Section 4.3).
+
+**First time reaching score 19: 3,500,000 environment steps.** The run 4B snapshot at 3.5M averages 19.25 on seeds 0–19 and wins all 20 games (minimum 16, maximum 21; 13 games at 19 or more). The snapshots evaluated before it were at 2.75M, 3M and 3.25M, and the best of these scored 18.60. No Task 3 snapshot reached 19 within 2.5M steps.
 
 ---
 
@@ -468,9 +475,11 @@ The ep1400 checkpoint was evaluated twice and gave 19.10 both times, so it is su
 - **Training reward is lower than evaluation reward.** Training games still use ε = 0.02 random actions on top of 25% sticky actions, so training returns stayed around 11–14 while greedy evaluation reached 17–20.
 - **The margin is small.** 19.10 is only just above the threshold. The game is stochastic (sticky actions), and GPU kernels on another device (for example CUDA instead of MPS) may produce slightly different Q-values, so a re-evaluation elsewhere could land slightly lower.
 
-### 4.3 Task 3 training curve and sample efficiency — TODO
+### 4.3 Task 3 training curve and sample efficiency
 
 ![Task 3 vs Task 2: Eval Reward vs Env Step Count](screenshots/task3_wandb_eval.png)
+
+*Eval Reward (5-game greedy average for Task 3, 3 games for Task 2) against environment steps. Green: run 3C (0 → 2.5M); orange: run 4B (continuation of 3C, 2.5M → 3.5M); blue: vanilla DQN (Task 2). The curves show the **raw** online network. The submitted 600k–2.5M snapshots are weight-averaged versions of run 3C, which score 2–5 points higher than its raw network (Section 3.3 and the run 3 analysis below).*
 
 #### Run 1: Double DQN + PER + 3-step return on top of the Task 2 setup
 
@@ -611,6 +620,150 @@ None of the five enhanced runs had a 5-game evaluation of 19 or more within 1M s
 - The vanilla baseline is the Task 2 run, which used a replay start of 50k and a slower ε decay (0.999988). A "no enhancement" run with exactly the ablation settings would be a cleaner baseline.
 - The ablation stops at 1M steps, so it says nothing about which variant would reach 19 first after that.
 
+#### Run 3: 2-step return, replay ratio 2 and weight averaging
+
+The ablation pointed at two problems: the uncorrected 3-step return caps the score, and single snapshots are noisy. Run 3 changes three things relative to run 1 and keeps everything else (Double DQN, PER with α 0.6 and β 0.4 → 1 over 1M steps, lr 1e-4, batch 32, memory 100k, replay start 20k, ε decay 0.99998 → 0.02 per update, hard target copy every 1,000 updates):
+
+- **n = 2 instead of 3.** A shorter multi-step return still propagates reward faster than 1-step, with less off-policy bias than n = 3.
+- **Replay ratio 2 (`--train-per-step 2`).** Two gradient updates per environment step. The grade counts environment steps, not updates or wall time, so extra updates on the same data are a direct way to be more sample-efficient. A side effect: ε decays per update, so it reaches its floor in about half as many environment steps (≈ 0.12M instead of ≈ 0.22M), and the target network is copied every 500 environment steps instead of every 1,000.
+- **Weight averaging for evaluation and snapshots** (`--avg-horizons 30000,100000,300000`). Besides the online network, the agent keeps exponential moving averages of its weights (Polyak averaging). They are updated every 10 environment steps and are **never used to act or to compute targets**, so training is unchanged. At each snapshot step, the raw network and the three averaged networks are all saved.
+
+```python
+def update_weight_averages(self):
+    self.avg_updates += 1
+    with torch.no_grad():
+        for h, net in self.avg_nets.items():
+            tau = max(self.avg_every / h, 1.0 / self.avg_updates)   # horizon h env steps
+            for w_avg, w in zip(net.parameters(), self.q_net.parameters()):
+                w_avg.mul_(1 - tau).add_(w, alpha=tau)
+```
+
+The `1 / avg_updates` term makes the average a plain mean of all weights so far until the horizon is reached, so early averages are not dominated by the random initialization. An averaged snapshot at step *t* uses only the weights trained on the first *t* environment steps, so it is a valid snapshot for that step.
+
+**Why averaging.** Before run 3, I averaged the weights of saved checkpoints from earlier runs and evaluated them on seeds 0–19. The averaged network beat every checkpoint it was built from: four vanilla checkpoints (ep400–700) scored 16.3–17.65 each and 19.00 averaged, and four late run 1 checkpoints scored 13.5–13.7 each and 17.80 averaged. The checkpoints of one run are noisy versions of a better policy, and averaging removes much of that noise.
+
+**Three configurations were started in parallel**; the two weaker ones were stopped early to give the CPU to the best one:
+
+| W&B run | n | Replay ratio | Stopped at | Last evaluation (raw / averaged) |
+|---|---|---|---|---|
+| `task3-run3a-n2-rr4` | 2 | 4 | ≈ 0.38M | 0.8 / 5.8 at 0.37M |
+| `task3-run3b-n3-rr4` | 3 | 4 | ≈ 0.25M | −12.4 / −11.2 at 0.23M |
+| **`task3-run3c-n2-rr2`** | 2 | 2 | continuing | see below |
+
+Run 3B (n = 3) was no faster than run 1, which agrees with the ablation. Run 3A (replay ratio 4) was ahead of run 1 at the same step, but clearly behind 3C and slower in wall time.
+
+**Run 3C snapshot scores (seeds 0–19):**
+
+| Snapshot | 600k | 600k min / max (≥ 19) | 1M | 1M min / max (≥ 19) |
+|---|---|---|---|---|
+| Raw network | 14.75 | 9 / 19 (1) | 12.75 | 2 / 19 (2) |
+| Averaged, 30k horizon | 13.90 | 7 / 20 (2) | 17.15 | 13 / 19 (3) |
+| Averaged, 100k horizon | **15.45** | 6 / 20 (5) | 17.10 | 11 / 20 (6) |
+| Averaged, 300k horizon | 14.25 | 9 / 20 (1) | **17.40** | 14 / 20 (7) |
+| *Run 1* | *13.05* | | *11.05* | |
+| *Vanilla DQN (nearest checkpoints)* | *13.80 (0.66M)* | | *17.60 (0.90M) / 16.35 (1.12M)* | |
+
+At 1M the averaged networks score 4.4–4.7 points more than the raw network, and every game of the 300k-averaged network is a win (minimum 14).
+
+**Comparison with vanilla DQN.** Training evaluations averaged per 100k environment steps (vanilla: 3 games per evaluation; run 3C: 5 games):
+
+| Env steps | Vanilla (Task 2) | Run 3C raw | Run 3C averaged (100k) |
+|---|---|---|---|
+| 0.2 – 0.3M | −8.7 | −6.9 | −5.7 |
+| 0.3 – 0.4M | −6.0 | 5.0 | **6.3** |
+| 0.4 – 0.5M | 2.0 | 11.8 | **12.8** |
+| 0.5 – 0.6M | 9.0 | 9.4 | **14.9** |
+| 0.6 – 0.7M | 12.2 | 11.1 | **16.9** |
+| 0.7 – 0.8M | 15.3 | 12.5 | **16.8** |
+| 0.8 – 0.9M | 16.2 | 9.3 | 16.4 |
+| 0.9 – 1.0M | **18.7** | 14.2 | 15.7 |
+| 1.0 – 1.1M | **17.7** | 13.7 | 17.1 |
+| 1.1 – 1.2M | **19.0** | 13.7 | 16.8 |
+
+Environment steps until the training evaluation first reaches a given score:
+
+| Score | Vanilla | Run 3C averaged | Speed-up |
+|---|---|---|---|
+| 10 | 0.61M | 0.39M | 1.6× |
+| 15 | 0.76M | 0.47M | 1.6× |
+| 17 | 0.95M | 0.60M | 1.6× |
+
+**Observations.**
+
+- **Run 3C is about 1.6× more sample-efficient than vanilla DQN up to a score of ≈ 17.** It reaches each level 0.2–0.35M steps earlier, and its 600k snapshot (15.45) is the best 600k result of all runs, above vanilla's 13.80 at 0.66M. This is the first enhanced run that beats vanilla on the 20-seed test.
+- **It then levels off at ≈ 16–17, and vanilla catches up.** At ≈ 1M both score ≈ 17.5 on seeds 0–19 (17.40 vs 17.60), and from 0.9M vanilla's training evaluations are higher.
+- **The raw network is clearly worse than vanilla.** With two updates per step its weights move a lot between evaluations (training evaluations swing between 5.6 and 15 after 0.7M). Weight averaging is what turns this noisy network into a competitive one.
+- **Possible reasons for the plateau** (not tested): the 2-step return still has some off-policy bias; ε reaches its 0.02 floor about twice as early in environment steps, so exploration stops sooner; and PER's correction is complete only when β reaches 1 at 1M steps.
+- **Limitations.** One training run per configuration, training evaluations of only 3–5 games, and vanilla used a different replay start (50k) and ε decay. Run 3C also differs from vanilla in five ways at once (Double DQN, PER, 2-step return, replay ratio 2, weight averaging), so this comparison does not isolate any one of them.
+
+**Run 3C after 1M steps.** It kept improving slowly but stayed below 19 on seeds 0–19:
+
+| Snapshot | Raw | Avg 30k | Avg 100k | Avg 300k |
+|---|---|---|---|---|
+| 1.5M | 13.10 | 15.60 | 17.35 | **17.50** |
+| 2M | 15.55 | 16.65 | 16.25 | **17.85** |
+| 2.5M | 15.45 | 15.45 | 16.85 | **16.95** |
+
+Two 5-game training evaluations reached 19.00 (raw network at 1.82M, averaged at 2.48M), but the best models saved at those moments scored only 16.45 and 16.40 on seeds 0–19. Between 1.5M and 2.5M, the raw network's training evaluations ranged from 8.4 to 19.0.
+
+**Offline checkpoint averaging.** Run 3C also saved the raw network every 25k environment steps (`--checkpoint-steps 25000`). `average_checkpoints.py` takes the plain (uniform) mean of all checkpoints in a window ending at a snapshot step. Like the online averages, the result only uses weights trained on the environment steps up to that snapshot. Scores on seeds 0–19:
+
+| Window (checkpoints) | Ending at 2M | Ending at 2.5M |
+|---|---|---|
+| 500k (20) | 17.50 | 17.30 |
+| 750k (30) | **18.00** | 17.20 |
+| 1M (40) | 17.45 | **17.90** |
+
+These are the submitted 2M and 2.5M snapshots (Section 3.3). They add at most about one point over the online averages, so run 3C's policy itself levels off at ≈ 17–18.
+
+#### Run 4: continuing past 2.5M
+
+Since no run reached 19 within 2.5M steps, training continued from run 3C's weights at 2.5M. `dqn.py` got two options for this: `--load-model` initializes the online and target networks from saved weights, and `--start-env-steps` starts the environment-step counter at the steps already used. The replay buffer cannot be restored, so it starts empty and is refilled (20k steps) before updates begin; those refill steps are counted. ε is fixed at its floor of 0.02, and PER's β is already 1 at this point.
+
+Two continuations ran in parallel:
+
+| W&B run | Starts from | n | Replay ratio | Learning rate | Purpose |
+|---|---|---|---|---|---|
+| `task3-run4a-cont` | 3C raw weights at 2.5M | 2 | 2 | 1e-4 | plain continuation of run 3C |
+| **`task3-run4b-finetune`** | 3C 1M-window checkpoint average at 2.5M (17.90) | **1** | **1** | **5e-5** | fine-tuning |
+
+Run 4B tests the two explanations from the analysis above:
+
+- **1-step return:** removes the off-policy bias of the multi-step return, the likely cause of the ≈ 17.5 ceiling.
+- **Replay ratio 1 and half the learning rate:** the weights move about 4× less per environment step, which should reduce the large swings of the raw network.
+
+In this final phase the agent is still Double DQN with PER. The multi-step return was used for the first 2.5M steps, where its faster reward propagation helps most.
+
+**Snapshot scores (seeds 0–19), run 4B:**
+
+| Snapshot | Raw | Avg 30k | Avg 100k | Avg 300k | Best: min / max (games ≥ 19) |
+|---|---|---|---|---|---|
+| 2.75M | 17.90 | 17.45 | 18.25 | 17.85 | 15 / 21 (9), avg 100k |
+| 3M | 17.25 | 18.55 | 18.35 | 18.60 | 12 / 21 (16), avg 300k |
+| 3.25M | 18.10 | 18.55 | 17.90 | 18.35 | 15 / 21 (11), avg 30k |
+| **3.5M** | **19.25** | 19.05 | 19.15 | 19.05 | 16 / 21 (13), raw |
+
+The averages were restarted at 2.5M, so in run 4 they only cover weights trained after the restart.
+
+**The 3.5M snapshot is the first to reach 19 on seeds 0–19: 19.25 for the raw network**, which wins all 20 games (scores 20 19 18 20 17 21 19 17 21 21 21 18 21 20 18 21 18 19 20 16). All three averaged versions also score above 19, so the result does not depend on the averaging.
+
+Run 4A, the unchanged continuation, behaved like run 3C. Its 2.75M snapshot scored 12.00 raw (minimum −6) and 17.90 for the best average. It was stopped at ≈ 2.94M to give run 4B the CPU.
+
+**Training evaluations (5 games), averaged per 250k steps:**
+
+| Env steps | Run 4A raw (min) | Run 4A averaged | Run 4B raw (min) | Run 4B averaged | Vanilla (3 games) |
+|---|---|---|---|---|---|
+| 2.50 – 2.75M | 13.4 (5.8) | 17.2 | **17.4** (14.2) | 18.1 | 16.4 |
+| 2.75 – 3.00M | 13.6 (11.0) | 17.0 | **17.3** (12.6) | 17.8 | 17.1 |
+| 3.00 – 3.25M | – | – | 16.8 (13.0) | **18.9** | 18.7 |
+| 3.25 – 3.50M | – | – | **18.1** (15.6) | 18.4 | 16.8 |
+
+**Observations.**
+
+- **The fine-tuning settings fixed the raw network's instability.** From the same starting point, run 4B's raw network averaged ≈ 17.4 in training evaluations, with a lowest value of 12.6. Run 4A's averaged ≈ 13.5, with a lowest value of 5.8. Run 3C's raw network averaged 13.4 between 1.5M and 2.5M. On seeds 0–19, run 4B's raw snapshots scored 17.25–19.25; runs 3C and 4A scored 12.00–15.55. This supports the view that the large swings came from the replay ratio of 2 at learning rate 1e-4.
+- **With the 1-step return, the ceiling moved from ≈ 17.5 to above 19.** This is consistent with the multi-step bias explanation, but run 4B changed three settings at once (n, replay ratio, learning rate), so this experiment cannot say which of them mattered most.
+- **Weight averaging matters less once training is stable.** In run 3C the averages added 4–5 points over the raw network. In run 4B the raw network and its averages are within about one point of each other, and at 3.5M the raw network is the best.
+
 #### Sample efficiency with and without the enhancements
 
 | Variant | Env steps to reach score 19 | Best 20-seed score within budget |
@@ -621,8 +774,10 @@ None of the five enhanced runs had a 5-game evaluation of 19 or more within 1M s
 | 3-step return only | not reached within 1M | 12.40 (1M) |
 | All three (Task 3, run 1) | not reached on 20 seeds within 2.5M | 15.25 (best snapshot, ≈ 2.36M) |
 | All three + dueling + soft target (run 2) | not reached on 20 seeds within 2.5M | 12.05 (2.5M) |
+| Double DQN + PER + 2-step, replay ratio 2, weight averaging (run 3C) | not reached on 20 seeds within 2.5M | 18.00 (2M, checkpoint average) |
+| Run 3C continued with 1-step, replay ratio 1, lr 5e-5 (run 4B) | **3.5M on 20 seeds** | **19.25** (3.5M, raw) |
 
-In this setup the enhancements **did not improve sample efficiency** over vanilla DQN past the first ≈ 0.6M steps. The 3-step return gave a clear early speed-up (score ≈ 11 by 0.4M steps versus ≈ 0 for the others), but every enhanced variant ended at or below vanilla DQN at 1M steps. The ablation points to the uncorrected multi-step return as the component that limits the final score, and to Double DQN as the one that helps most later in training.
+Runs 1 and 2 **did not improve sample efficiency** over vanilla DQN past the first ≈ 0.6M steps. The 3-step return gave a clear early speed-up (score ≈ 11 by 0.4M steps versus ≈ 0 for the others), but every one of those variants ended at or below vanilla DQN at 1M steps. The ablation points to the uncorrected multi-step return as the component that limits the final score, and to Double DQN as the one that helps most later in training. Run 3C, with a shorter return, two updates per step and weight averaging, is the first enhanced run that is clearly more sample-efficient than vanilla: about 1.6× fewer environment steps to reach scores of 10, 15 and 17, and a better 600k snapshot (15.45 vs 13.80). It then levels off at ≈ 17–18 and does not reach 19 within 2.5M steps. Only after switching to a 1-step return with fewer, smaller updates (run 4B) did the agent reach 19 on seeds 0–19, at 3.5M steps. Vanilla DQN's first 20-seed snapshot above 19 was at 3.09M, but Task 2 saved checkpoints only every 100 games, so its true first step may be earlier. Overall, the enhancements made learning much faster up to ≈ 17 points, but did not reach 19 sooner than vanilla DQN.
 
 ---
 
@@ -657,9 +812,45 @@ The template's default hyperparameters suit Pong rather than CartPole: ε decay 
 - **Truncation handling.** Runs B→G and C→H differ only in the truncation fix and gave similar results within this budget, so this single-seed experiment does not show a clear empirical effect. The fix is kept because it makes the targets correct.
 - **Limitation.** Every configuration was run with one seed, so differences of a few dozen reward points are within run-to-run noise.
 
-### 5.2 Other training strategies — TODO (optional)
+### 5.2 Other training strategies on Pong
 
-Ideas: Huber vs. MSE loss, soft target updates, learning-rate schedules.
+Besides the three required techniques, I tried several other training strategies during Task 3. The full experiments are in Section 4.3; this section summarizes what each strategy did.
+
+| Strategy | Variants compared | Result (seeds 0–19 unless noted) |
+|---|---|---|
+| Weight averaging (evaluation only) | raw network vs. online averages (30k / 100k / 300k horizons) vs. checkpoint averages | +4–5 points at 1M in run 3C; best Task 3 snapshot up to 2.5M (18.00) |
+| Replay ratio | 1 vs. 2 vs. 4 gradient updates per environment step | 2 was the best of 2 and 4; ≈ 1.6× faster than vanilla up to ≈ 17 points, but a noisy raw network |
+| Multi-step length | n = 3 vs. 2 vs. 1 | each shorter return raised the final score: ≈ 13–15 → ≈ 17.5 → 19.25 |
+| Fine-tuning phase | after 2.5M: same settings vs. n = 1, replay ratio 1, lr 5e-5 | fine-tuned run reached 19.25 at 3.5M; unchanged run stayed at ≈ 12–18 |
+| Dueling head + soft target update | run 1 vs. run 1 + dueling + τ = 0.001 | worse at every snapshot (e.g. 6.10 vs. 11.05 at 1M) |
+
+**Weight averaging.** The averaged network is a running mean of the online network's weights over time (Polyak averaging). It is used only to evaluate and save snapshots, never to act or compute targets, so training does not change (implementation in Section 4.3, run 3).
+
+- **It removes snapshot noise.** Before run 3, I averaged saved checkpoints of earlier runs offline. Four vanilla checkpoints (games 400–700) scored 16.30–17.65 each and **19.00** averaged. Four late run 1 checkpoints scored 13.5–13.7 each and **17.80** averaged. Consecutive checkpoints of one run are noisy samples around a better policy, and the average is closer to that policy.
+- **Longer horizons were better once the policy was good.** In run 3C the 100k horizon was best at 600k, and the 300k horizon was best at every later snapshot (1M–2.5M). Early in training the policy improves quickly, so a long average still includes older, weaker weights. Later the policy mostly fluctuates, and a longer average removes more of that noise.
+- **The benefit depends on how noisy training is.** In run 3C (two updates per step) averaging added 4–5 points at 1M. In run 4B (one update per step, smaller learning rate) the raw network and its averages were within about one point, and the raw network was best at 3.5M.
+
+**Replay ratio.** The grade counts environment steps, not updates or wall time, so extra gradient updates on the same data are a direct way to try to use each step better.
+
+- **Two updates per step** (run 3C) learned clearly faster than one (vanilla) early on: 0.39M vs. 0.61M steps to reach 10, and 0.60M vs. 0.95M steps to reach 17 in training evaluations.
+- **Four updates per step** (run 3A, n = 2) was behind run 3C at the same environment step (training evaluation 0.8 raw / 5.8 averaged at 0.37M, against 5.0 / 6.3 for run 3C in the 0.3–0.4M range). It also took twice as long in wall time.
+- **The cost of a high replay ratio is instability.** With two updates per step, the raw network's 20-seed score moved between 12.75 and 15.55 across snapshots, and its training evaluations ranged from 5.6 to 19.0. Each environment step changes the weights more, and each stored transition is replayed more often. Lowering it back to one (with a smaller learning rate) in run 4B brought the raw network to 17–19.
+
+**Multi-step length.** The return length showed the clearest trade-off of all strategies:
+
+| n | Runs | Early learning | Score it levels off at |
+|---|---|---|---|
+| 3 | ablation (3-step only), run 1, run 3B | fastest (≈ 11 by 0.4M in the ablation) | ≈ 12–15 |
+| 2 | run 3C | fast (≈ 13 by 0.45M) | ≈ 17–18 |
+| 1 | vanilla, run 4B | slowest | 19 and above |
+
+The likely reason is the off-policy bias of the uncorrected n-step return (Section 2.5): the extra rewards come from older policies stored in the replay buffer, and a longer return contains more of them. This suggests a schedule: a multi-step return early, when fast reward propagation matters most, and a 1-step return late, when bias matters most. Run 4 used exactly this schedule, switching from n = 2 to n = 1 at 2.5M steps.
+
+**Fine-tuning phase.** Continuing run 3C after 2.5M with unchanged settings (run 4A) did not help: its 2.75M snapshot scored 12.00 raw and 17.90 at best. The fine-tuning settings of run 4B (n = 1, one update per step, learning rate halved to 5e-5) improved every snapshot and reached **19.25 at 3.5M**. Lowering the update size late in training is the same idea as a learning-rate schedule.
+
+**Dueling head and soft target update** (DL-7, slides 55 and 70–71). Added to run 1 together (run 2), they lowered every snapshot score, for example 6.10 vs. 11.05 at 1M and 12.05 vs. 13.55 at 2.5M. The most likely cause is the very small τ = 0.001: the target network lagged ≈ 1,000 updates behind on average and never caught up, as a hard copy does. The dueling head also doubled the parameter count without more data. Larger τ values were not tested.
+
+**Limitations.** Each strategy was tried in a single training run, and several runs changed more than one setting at once (for example, run 4B changed n, the replay ratio and the learning rate together). The trends above are consistent across runs, but differences of about one point are within the noise of a single run. Huber loss and other learning-rate schedules were not tried.
 
 ---
 
@@ -702,4 +893,50 @@ python test_model.py --model-path LAB5_115550809_task2.pt --env-steps 3092538
 python test_model.py --model-path LAB5_115550809_task2.pt --episodes 3 --save-video --output-dir ./eval_videos
 ```
 
-**Task 3:** TODO
+**Task 3 training, run 3C (0 → 2.5M steps; produces the 600k–2.5M snapshots)**
+
+```bash
+python dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run3c-n2-rr2 --save-dir ./results/task3_run3c-n2-rr2 \
+  --double-dqn --per --per-alpha 0.6 --per-beta-start 0.4 --per-beta-steps 1000000 --n-step 2 \
+  --train-per-step 2 --lr 1e-4 --batch-size 32 --memory-size 100000 --replay-start-size 20000 \
+  --epsilon-decay 0.99998 --epsilon-min 0.02 --target-update-frequency 1000 \
+  --snapshot-steps 600000,1000000,1500000,2000000,2500000 --max-env-steps 2500000 --episodes 100000 \
+  --eval-episodes 5 --eval-freq 10 --avg-horizons 30000,100000,300000 --avg-eval-horizon 100000 \
+  --checkpoint-steps 25000
+```
+
+At each snapshot step this saves `snapshot_<N>.pt` (raw network) and `snapshot_<N>_avg<H>.pt` (online weight averages), plus `ckpt_<N>.pt` every 25k steps.
+
+**Checkpoint averages (the 2M and 2.5M snapshots)**
+
+```bash
+python average_checkpoints.py ./results/task3_run3c-n2-rr2 2000000 750000 LAB5_115550809_task3_2000000.pt
+python average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 LAB5_115550809_task3_2500000.pt
+```
+
+**Task 3 training, run 4B (2.5M → 3.5M steps; produces the best snapshot)**
+
+```bash
+python average_checkpoints.py ./results/task3_run3c-n2-rr2 2500000 1000000 ./results/swa_2500000_w1000000.pt
+python dqn.py --env ALE/Pong-v5 --wandb-run-name task3-run4b-finetune --save-dir ./results/task3_run4b-finetune \
+  --load-model ./results/swa_2500000_w1000000.pt --start-env-steps 2500000 \
+  --double-dqn --per --per-alpha 0.6 --per-beta-start 0.4 --per-beta-steps 1000000 --n-step 1 \
+  --train-per-step 1 --lr 5e-5 --batch-size 32 --memory-size 100000 --replay-start-size 20000 \
+  --epsilon-start 0.02 --epsilon-min 0.02 --target-update-frequency 1000 \
+  --snapshot-steps 2750000,3000000,3250000,3500000 --max-env-steps 3500000 --episodes 100000 \
+  --eval-episodes 5 --eval-freq 10 --avg-horizons 30000,100000,300000 --avg-eval-horizon 100000 \
+  --checkpoint-steps 25000
+```
+
+`LAB5_115550809_task3_best.pt` is `results/task3_run4b-finetune/snapshot_3500000.pt`.
+
+**Task 3 evaluation (seeds 0–19)**
+
+```bash
+python test_model_task3.py --model_path LAB5_115550809_task3_600000.pt --env-steps 600000
+python test_model_task3.py --model_path LAB5_115550809_task3_1000000.pt --env-steps 1000000
+python test_model_task3.py --model_path LAB5_115550809_task3_1500000.pt --env-steps 1500000
+python test_model_task3.py --model_path LAB5_115550809_task3_2000000.pt --env-steps 2000000
+python test_model_task3.py --model_path LAB5_115550809_task3_2500000.pt --env-steps 2500000
+python test_model_task3.py --model_path LAB5_115550809_task3_best.pt --env-steps 3500000
+```
